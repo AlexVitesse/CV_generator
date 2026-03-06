@@ -1,0 +1,31 @@
+{
+  "name": "Tu Nombre Completo",
+  "location": "Ciudad, País",
+  "linkedin": "www.linkedin.com/in/tu-perfil",
+  "phone": "+52 00 0000 0000",
+  "email": "tu@correo.com",
+  "summary": "Breve descripción de tu perfil profesional y áreas de especialización.",
+  "experiences": [
+    {
+      "company": "Nombre de la Empresa",
+      "title": "Tu Puesto",
+      "location": "Ciudad, País",
+      "dates": "Mes Año \u2013 Actualidad",
+      "bullets": "Logro principal alcanzado en este puesto.\nResponsabilidad clave gestionada.\nTecnologías o metodologías utilizadas."
+    }
+  ],
+  "education": [
+    {
+      "institution": "Nombre de la Institución",
+      "degree": "Tu Título / Grado",
+      "location": "Ciudad, País",
+      "date": "Año Inicio \u2013 Año Fin",
+      "details": "Mención honorífica o especialidad (opcional)."
+    }
+  ],
+  "skills": [
+    { "text": "Habilidad Técnica 1" },
+    { "text": "Habilidad Técnica 2" },
+    { "text": "Habilidad Blanda 1" }
+  ]
+}

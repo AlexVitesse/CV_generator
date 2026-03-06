@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+.venv
+venv/
+
+# Datos personales (¡IMPORTANTE!)
+config_personal.json
+
+# Herramientas y editores
+.claude/
+.vscode/
+.idea/
+.streamlit/
+
+# Archivos generados
+*.pdf
