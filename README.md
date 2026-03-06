@@ -18,7 +18,7 @@ Un generador de CV profesional con formato estilo Harvard, construido con **Stre
    ```
 3. Instala las dependencias:
    ```bash
-   pip install streamlit reportlab deep-translator
+   pip install -r requirements.txt
    ```
 
 ## 🛠️ Configuración Personalizada
