@@ -19,6 +19,15 @@ def translate_text(text: str, source: str, target: str) -> str:
 
     translator = GoogleTranslator(source="auto", target=target)
 
+    def _fix_capitalization(original: str, translated: str) -> str:
+        """Corrige capitalización de Google Translate.
+        Si el original empezaba con minúscula, fuerza minúscula en la traducción."""
+        if not original or not translated:
+            return translated
+        if original[0].islower() and translated[0].isupper():
+            return translated[0].lower() + translated[1:]
+        return translated
+
     try:
         if "\n" in text:
             lines = text.split("\n")
@@ -28,7 +37,8 @@ def translate_text(text: str, source: str, target: str) -> str:
                 if stripped:
                     try:
                         res = translator.translate(stripped)
-                        translated_lines.append(res if res else stripped)
+                        res = _fix_capitalization(stripped, res) if res else stripped
+                        translated_lines.append(res)
                     except Exception:
                         translated_lines.append(stripped)
                 else:
@@ -36,7 +46,7 @@ def translate_text(text: str, source: str, target: str) -> str:
             return "\n".join(translated_lines)
         else:
             res = translator.translate(text)
-            return res if res else text
+            return _fix_capitalization(text, res) if res else text
     except Exception as e:
         print(f"Error traducción: {e}")
         return text
@@ -51,6 +61,7 @@ def translate_cv_data(data: dict, source: str, target: str,
 
     total_steps = 2  # summary + location
     total_steps += len(translated.get("experiences", [])) * 3
+    total_steps += len(translated.get("projects", [])) * 2
     total_steps += len(translated.get("education", [])) * 3
     total_steps += len(translated.get("skills", []))
     current_step = 0
@@ -79,6 +90,11 @@ def translate_cv_data(data: dict, source: str, target: str,
             exp["dates"] = translate_text(exp["dates"], source, target)
         if exp.get("location"):
             exp["location"] = translate_text(exp["location"], source, target)
+
+    # ── Proyectos ───────────────────────────────────────────
+    for i, proj in enumerate(translated.get("projects", [])):
+        proj["name"] = step(f"proj_{i}_nm", proj.get("name", ""), source, target)
+        proj["description"] = step(f"proj_{i}_ds", proj.get("description", ""), source, target)
 
     # ── Educación ────────────────────────────────────────────
     for i, edu in enumerate(translated.get("education", [])):

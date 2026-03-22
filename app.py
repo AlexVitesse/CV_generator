@@ -21,6 +21,7 @@ import os
 from i18n import LANG_NAMES, t
 from translate import TRANSLATOR_AVAILABLE, translate_cv_data
 from pdf import generate_cv_pdf
+from ai_analyzer import AI_AVAILABLE
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -81,6 +82,19 @@ def sync_widgets_to_data(data: dict):
             if key in st.session_state:
                 ed[field] = st.session_state[key]
 
+    # Proyectos
+    proj_fields = [
+        ("p_nm_", "name"),
+        ("p_ur_", "url"),
+        ("p_ds_", "description"),
+    ]
+    for proj in data.get("projects", []):
+        pid = proj["id"]
+        for prefix, field in proj_fields:
+            key = f"{prefix}{pid}"
+            if key in st.session_state:
+                proj[field] = st.session_state[key]
+
     # Skills
     for sk in data.get("skills", []):
         key = f"s_tx_{sk['id']}"
@@ -111,6 +125,12 @@ def push_data_to_widgets(data: dict):
         st.session_state[f"e_lo_{eid}"] = ed.get("location", "")
         st.session_state[f"e_dt_{eid}"] = ed.get("date", "")
         st.session_state[f"e_dz_{eid}"] = ed.get("details", "")
+
+    for proj in data.get("projects", []):
+        pid = proj["id"]
+        st.session_state[f"p_nm_{pid}"] = proj.get("name", "")
+        st.session_state[f"p_ur_{pid}"] = proj.get("url", "")
+        st.session_state[f"p_ds_{pid}"] = proj.get("description", "")
 
     for sk in data.get("skills", []):
         st.session_state[f"s_tx_{sk['id']}"] = sk.get("text", "")
@@ -180,6 +200,8 @@ def default_cv_data():
     # Asegurar IDs únicos para widgets de Streamlit
     for exp in data.get("experiences", []):
         if "id" not in exp: exp["id"] = uid()
+    for proj in data.get("projects", []):
+        if "id" not in proj: proj["id"] = uid()
     for edu in data.get("education", []):
         if "id" not in edu: edu["id"] = uid()
     for sk in data.get("skills", []):
@@ -206,6 +228,17 @@ def main():
         st.session_state.lang = "es"
     if "content_lang" not in st.session_state:
         st.session_state.content_lang = "es"
+    if "ai_api_key" not in st.session_state:
+        if AI_AVAILABLE:
+            from ai_analyzer import load_ai_config, DEFAULT_MODEL
+            _cfg = load_ai_config()
+            st.session_state.ai_api_key = _cfg.get("api_key", "")
+            st.session_state.ai_model = _cfg.get("model", DEFAULT_MODEL)
+        else:
+            st.session_state.ai_api_key = ""
+            st.session_state.ai_model = ""
+    if "analysis_result" not in st.session_state:
+        st.session_state.analysis_result = None
 
     d = st.session_state.cv
 
@@ -321,6 +354,8 @@ def main():
                 imported = json.load(uploaded)
                 for exp in imported.get("experiences", []):
                     exp.setdefault("id", uid())
+                for proj in imported.get("projects", []):
+                    proj.setdefault("id", uid())
                 for edu in imported.get("education", []):
                     edu.setdefault("id", uid())
                 for i, sk in enumerate(imported.get("skills", [])):
@@ -330,7 +365,7 @@ def main():
                         sk.setdefault("id", uid())
                 st.session_state.cv = imported
                 st.session_state.content_lang = "es"
-                clear_keys("x_", "e_", "s_", "f_")
+                clear_keys("x_", "p_", "e_", "s_", "f_")
                 st.success(t("import_success"))
                 st.rerun()
             except Exception as e:
@@ -342,173 +377,398 @@ def main():
             st.session_state.cv = default_cv_data()
             st.session_state.content_lang = "es"
             st.session_state.lang = "es"
-            clear_keys("x_", "e_", "s_", "f_")
+            clear_keys("x_", "p_", "e_", "s_", "f_")
             st.rerun()
 
-    # ── Información Personal ─────────────────────────────────
-    st.header(t("personal_info"))
-    c1, c2 = st.columns(2)
-    with c1:
-        d["name"] = st.text_input(
-            t("full_name"), value=d.get("name", ""), key="f_name"
-        )
-        d["location"] = st.text_input(
-            t("location"), value=d.get("location", ""), key="f_loc"
-        )
-        d["linkedin"] = st.text_input(
-            t("linkedin"), value=d.get("linkedin", ""), key="f_li"
-        )
-        if not validate_linkedin(d["linkedin"]):
-            st.warning(t("validation_linkedin"))
-    with c2:
-        d["phone"] = st.text_input(
-            t("phone"), value=d.get("phone", ""), key="f_phone"
-        )
-        if not validate_phone(d["phone"]):
-            st.warning(t("validation_phone"))
-        d["email"] = st.text_input(
-            t("email"), value=d.get("email", ""), key="f_email"
-        )
-        if not validate_email(d["email"]):
-            st.warning(t("validation_email"))
+        # ── Configuración IA ─────────────────────────────────
+        st.divider()
+        st.subheader(t("ai_config_header"))
 
-    # ── Resumen ──────────────────────────────────────────────
-    st.header(t("summary_header"))
-    d["summary"] = st.text_area(
-        t("summary_label"),
-        value=d.get("summary", ""),
-        height=100,
-        key="f_summary",
-    )
-
-    # ── Experiencia Profesional ──────────────────────────────
-    st.header(t("experience_header"))
-
-    exp_to_remove = None
-    for i, exp in enumerate(d["experiences"]):
-        eid = exp["id"]
-        label = exp.get("company", "") or t("new_experience")
-        title_hint = exp.get("title", "")
-        with st.expander(
-            f"**{label}** — {title_hint}" if title_hint else f"**{label}**",
-            expanded=(i == 0),
-        ):
-            c1, c2 = st.columns(2)
-            with c1:
-                exp["company"] = st.text_input(
-                    t("company"), value=exp.get("company", ""),
-                    key=f"x_co_{eid}",
-                )
-                exp["title"] = st.text_input(
-                    t("job_title"), value=exp.get("title", ""),
-                    key=f"x_ti_{eid}",
-                )
-            with c2:
-                exp["location"] = st.text_input(
-                    t("exp_location"), value=exp.get("location", ""),
-                    key=f"x_lo_{eid}",
-                )
-                exp["dates"] = st.text_input(
-                    t("period"), value=exp.get("dates", ""),
-                    key=f"x_da_{eid}",
-                )
-
-            exp["bullets"] = st.text_area(
-                t("bullets_label"),
-                value=exp.get("bullets", ""),
-                height=220,
-                key=f"x_bu_{eid}",
+        if AI_AVAILABLE:
+            from ai_analyzer import save_ai_config, DEFAULT_MODEL
+            new_key = st.text_input(
+                t("ai_api_key"),
+                value=st.session_state.ai_api_key,
+                type="password",
             )
-
-            if st.button(t("delete_experience"), key=f"x_del_{eid}"):
-                exp_to_remove = i
-
-    if exp_to_remove is not None:
-        d["experiences"].pop(exp_to_remove)
-        st.rerun()
-
-    if st.button(t("add_experience")):
-        d["experiences"].append({
-            "id": uid(), "company": "", "title": "",
-            "location": "", "dates": "", "bullets": "",
-        })
-        st.rerun()
-
-    # ── Educación ────────────────────────────────────────────
-    st.header(t("education_header"))
-
-    edu_to_remove = None
-    for i, edu in enumerate(d["education"]):
-        eid = edu["id"]
-        label = edu.get("institution", "") or t("new_institution")
-        with st.expander(f"**{label}**", expanded=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                edu["institution"] = st.text_input(
-                    t("institution"), value=edu.get("institution", ""),
-                    key=f"e_in_{eid}",
-                )
-                edu["degree"] = st.text_input(
-                    t("degree"), value=edu.get("degree", ""),
-                    key=f"e_de_{eid}",
-                )
-            with c2:
-                edu["location"] = st.text_input(
-                    t("edu_location"), value=edu.get("location", ""),
-                    key=f"e_lo_{eid}",
-                )
-                edu["date"] = st.text_input(
-                    t("date"), value=edu.get("date", ""),
-                    key=f"e_dt_{eid}",
-                )
-            edu["details"] = st.text_input(
-                t("details"),
-                value=edu.get("details", ""),
-                key=f"e_dz_{eid}",
+            new_model = st.text_input(
+                t("ai_model"),
+                value=st.session_state.ai_model or DEFAULT_MODEL,
             )
+            # Guardar si cambió
+            if new_key != st.session_state.ai_api_key or new_model != st.session_state.ai_model:
+                st.session_state.ai_api_key = new_key
+                st.session_state.ai_model = new_model
+                save_ai_config(new_key, new_model)
+        else:
+            st.warning(t("ai_not_available"))
 
-            if st.button(t("delete_education"), key=f"e_del_{eid}"):
-                edu_to_remove = i
+    # ── Tabs principales ────────────────────────────────────
+    tab_analysis, tab_manual = st.tabs([t("tab_analysis"), t("tab_manual")])
 
-    if edu_to_remove is not None:
-        d["education"].pop(edu_to_remove)
-        st.rerun()
+    # ══════════════════════════════════════════════════════════
+    # TAB 1: ANÁLISIS DE VACANTE
+    # ══════════════════════════════════════════════════════════
+    with tab_analysis:
+        if AI_AVAILABLE:
+            # Mostrar confirmación si se acaba de aplicar
+            if st.session_state.get("cv_adapted"):
+                st.success(t("vacancy_applied"))
+                del st.session_state.cv_adapted
 
-    if st.button(t("add_education")):
-        d["education"].append({
-            "id": uid(), "institution": "", "degree": "",
-            "details": "", "location": "", "date": "",
-        })
-        st.rerun()
-
-    # ── Skills ───────────────────────────────────────────────
-    st.header(t("skills_header"))
-    st.caption(t("skills_caption"))
-
-    sk_to_remove = None
-    for i, sk in enumerate(d["skills"]):
-        sid = sk["id"]
-        c1, c2 = st.columns([12, 1])
-        with c1:
-            sk["text"] = st.text_area(
-                f"Skill {i + 1}",
-                value=sk.get("text", ""),
-                height=72,
-                key=f"s_tx_{sid}",
+            vacancy_text = st.text_area(
+                t("vacancy_placeholder"),
+                height=200,
+                key="vacancy_text",
                 label_visibility="collapsed",
+                placeholder=t("vacancy_placeholder"),
             )
+
+            if st.button(t("vacancy_analyze"), type="primary"):
+                if not vacancy_text.strip():
+                    st.warning(t("vacancy_empty"))
+                else:
+                    try:
+                        from ai_analyzer import analyze_vacancy
+                        sync_widgets_to_data(d)
+                        with st.spinner(t("vacancy_analyzing")):
+                            result = analyze_vacancy(
+                                d, vacancy_text,
+                                st.session_state.ai_api_key,
+                                st.session_state.ai_model,
+                            )
+                        st.session_state.analysis_result = result
+                    except Exception as e:
+                        st.error(t("vacancy_error").format(str(e)))
+
+            # ── Mostrar resultados ────────────────────────────
+            result = st.session_state.analysis_result
+            if result:
+                st.divider()
+                c1, c2 = st.columns(2)
+                with c1:
+                    score = result.get("match_score", 0)
+                    st.metric(t("vacancy_match"), f"{score}%")
+                with c2:
+                    viable = result.get("viable", False)
+                    st.metric(
+                        t("vacancy_viable"),
+                        t("vacancy_yes") if viable else t("vacancy_no"),
+                    )
+
+                with st.expander(t("vacancy_matching_kw"), expanded=True):
+                    kws = result.get("matching_keywords", [])
+                    st.write(", ".join(f"**{k}**" for k in kws) if kws else "—")
+
+                with st.expander(t("vacancy_missing_kw"), expanded=True):
+                    kws = result.get("missing_keywords", [])
+                    st.write(", ".join(f"**{k}**" for k in kws) if kws else "—")
+
+                with st.expander(t("vacancy_reasoning")):
+                    st.write(result.get("reasoning", ""))
+
+                # ── Sugerencias editables ─────────────────────
+                suggestions = result.get("suggestions", {})
+                if suggestions:
+                    st.divider()
+                    st.subheader(t("vacancy_suggestions"))
+
+                    edited_summary = None
+                    if suggestions.get("summary"):
+                        edited_summary = st.text_area(
+                            t("vacancy_suggested_summary"),
+                            value=suggestions["summary"],
+                            height=100,
+                            key="sug_summary",
+                        )
+
+                    edited_exps = {}
+                    edited_titles = {}
+                    for exp_sug in suggestions.get("experiences", []):
+                        idx = exp_sug.get("index", 0)
+                        if exp_sug.get("title"):
+                            edited_titles[idx] = st.text_input(
+                                f"{t('job_title')} — Exp #{idx}",
+                                value=exp_sug["title"],
+                                key=f"sug_title_{idx}",
+                            )
+                        edited_exps[idx] = st.text_area(
+                            t("vacancy_suggested_bullets").format(idx),
+                            value=exp_sug.get("bullets", ""),
+                            height=180,
+                            key=f"sug_exp_{idx}",
+                        )
+
+                    edited_projs = {}
+                    for proj_sug in suggestions.get("projects", []):
+                        idx = proj_sug.get("index", 0)
+                        edited_projs[idx] = st.text_area(
+                            f"Proyecto #{idx} — descripción sugerida",
+                            value=proj_sug.get("description", ""),
+                            height=100,
+                            key=f"sug_proj_{idx}",
+                        )
+
+                    edited_skills = None
+                    if suggestions.get("skills"):
+                        raw_skills = suggestions["skills"]
+                        if isinstance(raw_skills, list):
+                            skills_value = " | ".join(raw_skills)
+                        else:
+                            skills_value = str(raw_skills)
+                        edited_skills = st.text_area(
+                            t("vacancy_suggested_skills"),
+                            value=skills_value,
+                            height=100,
+                            key="sug_skills",
+                        )
+
+                    if st.button(t("vacancy_apply"), type="primary"):
+                        sync_widgets_to_data(d)
+
+                        if edited_summary is not None:
+                            d["summary"] = edited_summary
+
+                        for idx, title in edited_titles.items():
+                            if 0 <= idx < len(d.get("experiences", [])):
+                                d["experiences"][idx]["title"] = title
+
+                        for idx, bullets in edited_exps.items():
+                            if 0 <= idx < len(d.get("experiences", [])):
+                                d["experiences"][idx]["bullets"] = bullets
+
+                        for idx, desc in edited_projs.items():
+                            projs = d.get("projects", [])
+                            if 0 <= idx < len(projs):
+                                projs[idx]["description"] = desc
+
+                        if edited_skills is not None:
+                            # Preservar líneas de skills existentes que la IA no cubrió (ej: certs)
+                            new_skills = [{"id": uid(), "text": edited_skills.strip()}]
+                            # Si el CV original tenía más líneas de skills, conservarlas
+                            existing_skills = d.get("skills", [])
+                            for sk in existing_skills:
+                                txt = sk.get("text", "")
+                                # Conservar líneas de certs/IA que no están en la sugerencia
+                                if ("Cert" in txt or "cert" in txt) and txt.strip() not in edited_skills:
+                                    new_skills.append(sk)
+                            d["skills"] = new_skills
+
+                        push_data_to_widgets(d)
+                        st.session_state.cv_adapted = True
+                        st.rerun()
+        else:
+            st.info(t("ai_not_available"))
+
+    # ══════════════════════════════════════════════════════════
+    # TAB 2: EDICIÓN MANUAL DEL CV
+    # ══════════════════════════════════════════════════════════
+    with tab_manual:
+        # ── Información Personal ─────────────────────────────
+        st.header(t("personal_info"))
+        c1, c2 = st.columns(2)
+        with c1:
+            d["name"] = st.text_input(
+                t("full_name"), value=d.get("name", ""), key="f_name"
+            )
+            d["location"] = st.text_input(
+                t("location"), value=d.get("location", ""), key="f_loc"
+            )
+            d["linkedin"] = st.text_input(
+                t("linkedin"), value=d.get("linkedin", ""), key="f_li"
+            )
+            if not validate_linkedin(d["linkedin"]):
+                st.warning(t("validation_linkedin"))
         with c2:
-            st.write("")
-            if st.button("🗑️", key=f"s_del_{sid}"):
-                sk_to_remove = i
+            d["phone"] = st.text_input(
+                t("phone"), value=d.get("phone", ""), key="f_phone"
+            )
+            if not validate_phone(d["phone"]):
+                st.warning(t("validation_phone"))
+            d["email"] = st.text_input(
+                t("email"), value=d.get("email", ""), key="f_email"
+            )
+            if not validate_email(d["email"]):
+                st.warning(t("validation_email"))
+            d["github"] = st.text_input(
+                "GitHub", value=d.get("github", ""), key="f_gh"
+            )
 
-    if sk_to_remove is not None:
-        d["skills"].pop(sk_to_remove)
-        st.rerun()
+        # ── Resumen ──────────────────────────────────────────
+        st.header(t("summary_header"))
+        d["summary"] = st.text_area(
+            t("summary_label"),
+            value=d.get("summary", ""),
+            height=100,
+            key="f_summary",
+        )
 
-    if st.button(t("add_skill")):
-        d["skills"].append({"id": uid(), "text": ""})
-        st.rerun()
+        # ── Experiencia Profesional ──────────────────────────
+        st.header(t("experience_header"))
+
+        exp_to_remove = None
+        for i, exp in enumerate(d["experiences"]):
+            eid = exp["id"]
+            label = exp.get("company", "") or t("new_experience")
+            title_hint = exp.get("title", "")
+            with st.expander(
+                f"**{label}** — {title_hint}" if title_hint else f"**{label}**",
+                expanded=(i == 0),
+            ):
+                c1, c2 = st.columns(2)
+                with c1:
+                    exp["company"] = st.text_input(
+                        t("company"), value=exp.get("company", ""),
+                        key=f"x_co_{eid}",
+                    )
+                    exp["title"] = st.text_input(
+                        t("job_title"), value=exp.get("title", ""),
+                        key=f"x_ti_{eid}",
+                    )
+                with c2:
+                    exp["location"] = st.text_input(
+                        t("exp_location"), value=exp.get("location", ""),
+                        key=f"x_lo_{eid}",
+                    )
+                    exp["dates"] = st.text_input(
+                        t("period"), value=exp.get("dates", ""),
+                        key=f"x_da_{eid}",
+                    )
+
+                exp["bullets"] = st.text_area(
+                    t("bullets_label"),
+                    value=exp.get("bullets", ""),
+                    height=220,
+                    key=f"x_bu_{eid}",
+                )
+
+                if st.button(t("delete_experience"), key=f"x_del_{eid}"):
+                    exp_to_remove = i
+
+        if exp_to_remove is not None:
+            d["experiences"].pop(exp_to_remove)
+            st.rerun()
+
+        if st.button(t("add_experience")):
+            d["experiences"].append({
+                "id": uid(), "company": "", "title": "",
+                "location": "", "dates": "", "bullets": "",
+            })
+            st.rerun()
+
+        # ── Proyectos ─────────────────────────────────────────
+        st.header(t("projects_header"))
+
+        proj_to_remove = None
+        for i, proj in enumerate(d.get("projects", [])):
+            pid = proj["id"]
+            label = proj.get("name", "") or f"Proyecto {i + 1}"
+            with st.expander(f"**{label}**", expanded=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    proj["name"] = st.text_input(
+                        t("project_name"), value=proj.get("name", ""),
+                        key=f"p_nm_{pid}",
+                    )
+                with c2:
+                    proj["url"] = st.text_input(
+                        t("project_url"), value=proj.get("url", ""),
+                        key=f"p_ur_{pid}",
+                    )
+                proj["description"] = st.text_area(
+                    t("project_description"),
+                    value=proj.get("description", ""),
+                    height=100,
+                    key=f"p_ds_{pid}",
+                )
+                if st.button(t("delete_project"), key=f"p_del_{pid}"):
+                    proj_to_remove = i
+
+        if proj_to_remove is not None:
+            d["projects"].pop(proj_to_remove)
+            st.rerun()
+
+        if st.button(t("add_project")):
+            d.setdefault("projects", []).append({
+                "id": uid(), "name": "", "url": "", "description": "",
+            })
+            st.rerun()
+
+        # ── Educación ────────────────────────────────────────
+        st.header(t("education_header"))
+
+        edu_to_remove = None
+        for i, edu in enumerate(d["education"]):
+            eid = edu["id"]
+            label = edu.get("institution", "") or t("new_institution")
+            with st.expander(f"**{label}**", expanded=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    edu["institution"] = st.text_input(
+                        t("institution"), value=edu.get("institution", ""),
+                        key=f"e_in_{eid}",
+                    )
+                    edu["degree"] = st.text_input(
+                        t("degree"), value=edu.get("degree", ""),
+                        key=f"e_de_{eid}",
+                    )
+                with c2:
+                    edu["location"] = st.text_input(
+                        t("edu_location"), value=edu.get("location", ""),
+                        key=f"e_lo_{eid}",
+                    )
+                    edu["date"] = st.text_input(
+                        t("date"), value=edu.get("date", ""),
+                        key=f"e_dt_{eid}",
+                    )
+                edu["details"] = st.text_input(
+                    t("details"),
+                    value=edu.get("details", ""),
+                    key=f"e_dz_{eid}",
+                )
+
+                if st.button(t("delete_education"), key=f"e_del_{eid}"):
+                    edu_to_remove = i
+
+        if edu_to_remove is not None:
+            d["education"].pop(edu_to_remove)
+            st.rerun()
+
+        if st.button(t("add_education")):
+            d["education"].append({
+                "id": uid(), "institution": "", "degree": "",
+                "details": "", "location": "", "date": "",
+            })
+            st.rerun()
+
+        # ── Skills ───────────────────────────────────────────
+        st.header(t("skills_header"))
+        st.caption(t("skills_caption"))
+
+        sk_to_remove = None
+        for i, sk in enumerate(d["skills"]):
+            sid = sk["id"]
+            c1, c2 = st.columns([12, 1])
+            with c1:
+                sk["text"] = st.text_area(
+                    f"Skill {i + 1}",
+                    value=sk.get("text", ""),
+                    height=72,
+                    key=f"s_tx_{sid}",
+                    label_visibility="collapsed",
+                )
+            with c2:
+                st.write("")
+                if st.button("🗑️", key=f"s_del_{sid}"):
+                    sk_to_remove = i
+
+        if sk_to_remove is not None:
+            d["skills"].pop(sk_to_remove)
+            st.rerun()
+
+        if st.button(t("add_skill")):
+            d["skills"].append({"id": uid(), "text": ""})
+            st.rerun()
 
 
 if __name__ == "__main__":

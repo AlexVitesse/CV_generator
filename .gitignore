@@ -7,12 +7,16 @@ venv/
 
 # Datos personales (¡IMPORTANTE!)
 config_personal.json
+.ai_config.json
 
 # Herramientas y editores
 .claude/
 .vscode/
 .idea/
 .streamlit/
+
+# Logs de IA
+logs/
 
 # Archivos generados
 *.pdf

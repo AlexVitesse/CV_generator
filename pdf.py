@@ -147,7 +147,7 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> BytesIO:
 
     story.append(Paragraph(safe(data.get("name", "")), s_name))
 
-    contact_fields = ["location", "linkedin", "phone", "email"]
+    contact_fields = ["location", "linkedin", "github", "phone", "email"]
     parts = [data.get(k, "") for k in contact_fields]
     contact_str = " \u2022 ".join(p.strip() for p in parts if p.strip())
     story.append(Paragraph(safe(contact_str), s_contact))
@@ -189,6 +189,24 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> BytesIO:
                 if b.strip():
                     story.append(bullet_para(b))
             story.append(Spacer(1, 6))
+
+    # ── PROYECTOS ────────────────────────────────────────────
+    projects = data.get("projects", [])
+    if projects:
+        story.append(Paragraph(labels["pdf_projects"], s_section))
+        story.append(HRFlowable(
+            width="100%", thickness=0.5, color=black,
+            spaceBefore=1, spaceAfter=4,
+        ))
+        for proj in projects:
+            name = proj.get("name", "")
+            url = proj.get("url", "")
+            title_text = f"{name} — {url}" if url else name
+            story.append(Paragraph(safe(title_text), s_bold_l))
+            desc = proj.get("description", "").strip()
+            if desc:
+                story.append(bullet_para(desc))
+            story.append(Spacer(1, 4))
 
     # ── EDUCACIÓN ────────────────────────────────────────────
     education = data.get("education", [])

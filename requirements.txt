@@ -1,3 +1,4 @@
 streamlit
 reportlab
 deep-translator
+httpx
