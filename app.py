@@ -25,6 +25,99 @@ from ai_analyzer import AI_AVAILABLE
 
 
 # ═══════════════════════════════════════════════════════════════
+# POST-PROCESAMIENTO DE SUGERENCIAS IA
+# ═══════════════════════════════════════════════════════════════
+
+def _sanitize_ai_result(result: dict) -> dict:
+    """Limpia problemas comunes de la respuesta de la IA antes de mostrarla."""
+    suggestions = result.get("suggestions", {})
+
+    # ── Fix summary: palabras pegadas (e.g. "EngineerBackend") ──
+    if suggestions.get("summary"):
+        suggestions["summary"] = _fix_stuck_words(suggestions["summary"])
+
+    # ── Fix experience titles y bullets ──
+    for exp in suggestions.get("experiences", []):
+        if exp.get("title"):
+            exp["title"] = _fix_stuck_words(exp["title"])
+        if exp.get("bullets"):
+            exp["bullets"] = _strip_parenthetical_notes(exp["bullets"])
+
+    # ── Fix project descriptions ──
+    for proj in suggestions.get("projects", []):
+        if proj.get("description"):
+            proj["description"] = _strip_parenthetical_notes(proj["description"])
+
+    # ── Fix skills: quitar paréntesis justificativos ──
+    if suggestions.get("skills"):
+        if isinstance(suggestions["skills"], list):
+            suggestions["skills"] = [
+                _strip_parenthetical_notes(s) for s in suggestions["skills"]
+            ]
+
+    return result
+
+
+_PROTECTED_TERMS = [
+    "FastAPI", "FastHTML", "JavaScript", "TypeScript", "PostgreSQL",
+    "MySQL", "MongoDB", "GraphQL", "NodeJS", "Node.js", "GitHub",
+    "GitLab", "BitBucket", "DevOps", "MLOps", "DataOps", "LangChain",
+    "LangFuse", "LangSmith", "ChromaDB", "RunPod", "HuggingFace",
+    "OpenAI", "SQLAlchemy", "SQLModel", "PyTorch", "TensorFlow",
+    "APIs", "SDKs", "LLMs", "ORMs", "IoT", "OAuth", "WebSocket",
+    "innerHTML", "CloudRun", "BigQuery", "PubSub",
+]
+
+
+def _fix_stuck_words(text: str) -> str:
+    """Inserta espacio entre palabras pegadas tipo CamelCase: 'EngineerBackend' → 'Engineer Backend'.
+    Protege términos técnicos conocidos (FastAPI, APIs, etc.)."""
+    # Reemplazar términos protegidos con placeholders
+    placeholders = {}
+    for i, term in enumerate(_PROTECTED_TERMS):
+        placeholder = f"\x00TERM{i}\x00"
+        if term in text:
+            text = text.replace(term, placeholder)
+            placeholders[placeholder] = term
+
+    # Aplicar regex de separación
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    text = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', text)
+
+    # Restaurar términos protegidos
+    for placeholder, term in placeholders.items():
+        text = text.replace(placeholder, term)
+
+    return text
+
+
+def _strip_parenthetical_notes(text: str) -> str:
+    """Elimina paréntesis con justificaciones/explicaciones, conserva los técnicos."""
+    # Palabras que indican nota justificativa (en/es)
+    justification_markers = [
+        "implícit", "implicit", "inferred", "inferido",
+        "equivalen", "transferi", "implied",
+        "uso de", "use of ORMs", "experiencia cloud",
+    ]
+
+    def _is_justification(content: str) -> bool:
+        lower = content.lower()
+        return any(m in lower for m in justification_markers)
+
+    # Reemplaza paréntesis que contienen marcadores justificativos
+    def _replace(match):
+        inner = match.group(1)
+        if _is_justification(inner):
+            return ""  # Eliminar completamente
+        return match.group(0)  # Conservar paréntesis técnicos
+
+    result = re.sub(r'\s*\(([^)]+)\)', _replace, text)
+    # Limpiar espacios dobles resultantes
+    result = re.sub(r'  +', ' ', result).strip()
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════════════
 
@@ -239,12 +332,29 @@ def main():
             st.session_state.ai_model = ""
     if "analysis_result" not in st.session_state:
         st.session_state.analysis_result = None
+    if "eval_result" not in st.session_state:
+        st.session_state.eval_result = None
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "chat_pending_patch" not in st.session_state:
+        st.session_state.chat_pending_patch = None
 
     d = st.session_state.cv
+
+    # ── Deferred push: actualizar widget keys ANTES de renderizar widgets ──
+    if st.session_state.pop("_needs_widget_push", False):
+        push_data_to_widgets(d)
+
+    # ── Deferred: auto-traducir + re-evaluar después de aplicar adaptaciones ──
+    if st.session_state.pop("_needs_reevaluation", False):
+        _deferred_translate_and_reevaluate(d)
 
     # ── Título ───────────────────────────────────────────────
     st.title(f"📄 {t('page_title')}")
     st.caption(t("subtitle"))
+
+    # ── Top bar: Score + Vacante + Re-evaluar ────────────────
+    _render_score_navbar(d)
 
     # ── Barra lateral ────────────────────────────────────────
     with st.sidebar:
@@ -303,8 +413,7 @@ def main():
                     st.session_state.content_lang = target_lang
                     st.session_state.lang = target_lang
 
-                    push_data_to_widgets(translated)
-
+                    st.session_state._needs_widget_push = True
                     st.toast(t("translate_success").format(target_name))
                     st.rerun()
                 except Exception as e:
@@ -404,7 +513,9 @@ def main():
             st.warning(t("ai_not_available"))
 
     # ── Tabs principales ────────────────────────────────────
-    tab_analysis, tab_manual = st.tabs([t("tab_analysis"), t("tab_manual")])
+    tab_analysis, tab_manual, tab_chat, tab_eval = st.tabs([
+        t("tab_analysis"), t("tab_manual"), t("tab_chat"), t("tab_eval"),
+    ])
 
     # ══════════════════════════════════════════════════════════
     # TAB 1: ANÁLISIS DE VACANTE
@@ -437,7 +548,7 @@ def main():
                                 st.session_state.ai_api_key,
                                 st.session_state.ai_model,
                             )
-                        st.session_state.analysis_result = result
+                        st.session_state.analysis_result = _sanitize_ai_result(result)
                     except Exception as e:
                         st.error(t("vacancy_error").format(str(e)))
 
@@ -554,7 +665,8 @@ def main():
                                     new_skills.append(sk)
                             d["skills"] = new_skills
 
-                        push_data_to_widgets(d)
+                        st.session_state._needs_widget_push = True
+                        st.session_state._needs_reevaluation = True
                         st.session_state.cv_adapted = True
                         st.rerun()
         else:
@@ -769,6 +881,401 @@ def main():
         if st.button(t("add_skill")):
             d["skills"].append({"id": uid(), "text": ""})
             st.rerun()
+
+
+    # ══════════════════════════════════════════════════════════
+    # TAB 3: CHAT ASESOR DE CV
+    # ══════════════════════════════════════════════════════════
+    with tab_chat:
+        if not AI_AVAILABLE:
+            st.info(t("ai_not_available"))
+        elif not st.session_state.ai_api_key:
+            st.warning(t("chat_need_api"))
+        else:
+            st.subheader(t("chat_header"))
+            st.caption(t("chat_caption"))
+
+            # Indicador de vacante cargada
+            vacancy_ctx = st.session_state.get("vacancy_text", "").strip()
+            if vacancy_ctx:
+                st.info(t("chat_vacancy_loaded"))
+            else:
+                st.caption(t("chat_vacancy_none"))
+
+            # Botón limpiar chat
+            if st.button(t("chat_clear"), key="chat_clear_btn"):
+                st.session_state.chat_messages = []
+                st.session_state.chat_pending_patch = None
+                st.rerun()
+
+            # Mostrar historial
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            # Patch pendiente — mostrar preview
+            patch = st.session_state.chat_pending_patch
+            if patch:
+                st.divider()
+                st.subheader(t("chat_patch_preview"))
+                st.markdown(f"**{t('chat_patch_field')}:** `{patch.get('field')}`")
+                if patch.get("target_index") is not None:
+                    st.markdown(f"**Index:** `{patch.get('target_index')}`")
+                st.markdown(f"**{t('chat_patch_action')}:** `{patch.get('action', 'append')}`")
+                st.text_area(
+                    t("chat_patch_content"),
+                    value=patch.get("content", ""),
+                    height=120,
+                    key="patch_content_preview",
+                    disabled=True,
+                )
+                cp1, cp2 = st.columns(2)
+                with cp1:
+                    if st.button(t("chat_confirm_patch"), type="primary", key="patch_confirm"):
+                        _apply_chat_patch(d, patch)
+                        st.session_state._needs_widget_push = True
+                        st.session_state.chat_pending_patch = None
+                        st.toast(t("chat_patch_applied"))
+                        st.rerun()
+                with cp2:
+                    if st.button(t("chat_discard_patch"), key="patch_discard"):
+                        st.session_state.chat_pending_patch = None
+                        st.toast(t("chat_patch_discarded"))
+                        st.rerun()
+
+            # Input del chat
+            user_input = st.chat_input(t("chat_placeholder"))
+            if user_input:
+                st.session_state.chat_messages.append(
+                    {"role": "user", "content": user_input}
+                )
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+
+                with st.chat_message("assistant"):
+                    with st.spinner(t("chat_thinking")):
+                        try:
+                            from ai_analyzer import chat_with_advisor
+                            sync_widgets_to_data(d)
+                            reply = chat_with_advisor(
+                                d,
+                                st.session_state.chat_messages,
+                                st.session_state.ai_api_key,
+                                st.session_state.ai_model,
+                                vacancy_text=vacancy_ctx,
+                            )
+                            st.markdown(reply)
+                            st.session_state.chat_messages.append(
+                                {"role": "assistant", "content": reply}
+                            )
+                        except Exception as e:
+                            st.error(t("chat_error").format(str(e)))
+
+            # Botón aplicar última sugerencia
+            if (
+                st.session_state.chat_messages
+                and st.session_state.chat_messages[-1]["role"] == "assistant"
+                and not st.session_state.chat_pending_patch
+            ):
+                if st.button(t("chat_apply"), key="chat_apply_btn"):
+                    with st.spinner(t("chat_extracting")):
+                        try:
+                            from ai_analyzer import extract_chat_patch
+                            sync_widgets_to_data(d)
+                            last_msg = st.session_state.chat_messages[-1]["content"]
+                            patch = extract_chat_patch(
+                                last_msg, d,
+                                st.session_state.ai_api_key,
+                                st.session_state.ai_model,
+                            )
+                            if patch:
+                                st.session_state.chat_pending_patch = patch
+                                st.rerun()
+                            else:
+                                st.warning(t("chat_no_patch"))
+                        except Exception as e:
+                            st.error(t("chat_error").format(str(e)))
+
+
+    # ══════════════════════════════════════════════════════════
+    # TAB 4: EVALUACIÓN DETALLADA
+    # ══════════════════════════════════════════════════════════
+    with tab_eval:
+        _render_eval_tab(d)
+
+
+def _detect_vacancy_language(text: str) -> str:
+    """Detecta si la vacante está en inglés o español con heurística simple."""
+    en_markers = [" the ", " and ", " with ", " experience ", " years ",
+                  " team ", " about ", " requirements ", " skills ",
+                  " develop ", " work ", " you ", " our ", " will "]
+    es_markers = [" los ", " las ", " con ", " experiencia ", " años ",
+                  " equipo ", " acerca ", " requisitos ", " habilidades ",
+                  " desarrollar ", " trabajo ", " usted ", " nuestro "]
+    text_lower = f" {text.lower()} "
+    en_count = sum(1 for w in en_markers if w in text_lower)
+    es_count = sum(1 for w in es_markers if w in text_lower)
+    return "en" if en_count > es_count else "es"
+
+
+def _deferred_translate_and_reevaluate(d: dict):
+    """Auto-traduce el CV si hay mismatch de idioma con la vacante, luego re-evalúa."""
+    vacancy_text = st.session_state.get("vacancy_text", "").strip()
+    if not vacancy_text or not st.session_state.get("ai_api_key"):
+        return
+
+    vacancy_lang = _detect_vacancy_language(vacancy_text)
+    content_lang = st.session_state.get("content_lang", "es")
+
+    # Auto-traducir si hay mismatch de idioma
+    if vacancy_lang != content_lang and TRANSLATOR_AVAILABLE:
+        try:
+            translated = translate_cv_data(d, source=content_lang, target=vacancy_lang)
+            st.session_state.cv = translated
+            st.session_state.content_lang = vacancy_lang
+            st.session_state.lang = vacancy_lang
+            # Actualizar d para la re-evaluación
+            for k, v in translated.items():
+                d[k] = v
+            push_data_to_widgets(d)
+            st.toast(t("translate_success").format(LANG_NAMES.get(vacancy_lang, vacancy_lang)))
+        except Exception as e:
+            st.toast(f"Auto-translate error: {e}")
+
+    # Re-evaluar con el CV actualizado
+    try:
+        from ai_analyzer import analyze_vacancy
+        result = analyze_vacancy(
+            d, vacancy_text,
+            st.session_state.ai_api_key,
+            st.session_state.ai_model,
+        )
+        st.session_state.analysis_result = _sanitize_ai_result(result)
+        # Limpiar eval_result anterior porque el CV cambió
+        st.session_state.eval_result = None
+    except Exception as e:
+        st.toast(f"Re-evaluation error: {e}")
+
+
+def _render_score_navbar(d: dict):
+    """Renderiza la barra superior con score, label de vacante y botón re-evaluar."""
+    result = st.session_state.get("analysis_result")
+    vacancy_text = st.session_state.get("vacancy_text", "").strip()
+
+    nb1, nb2, nb3 = st.columns([1, 6, 2])
+
+    with nb1:
+        if result:
+            score = result.get("match_score", 0)
+            if score > 70:
+                color = "#28a745"
+            elif score >= 40:
+                color = "#fd7e14"
+            else:
+                color = "#dc3545"
+            st.markdown(
+                f"<div style='text-align:center;'>"
+                f"<span style='font-size:2.2rem;font-weight:bold;color:{color};'>{score}%</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"<div style='text-align:center;'>"
+                f"<span style='font-size:2.2rem;font-weight:bold;color:#888;'>{t('navbar_no_score')}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    with nb2:
+        if vacancy_text:
+            label = vacancy_text[:80].replace("\n", " ")
+            st.markdown(f"<div style='padding-top:0.6rem;'>📋 {label}...</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f"<div style='padding-top:0.6rem;color:#888;'>{t('navbar_no_vacancy')}</div>",
+                unsafe_allow_html=True,
+            )
+
+    with nb3:
+        if vacancy_text and st.session_state.get("ai_api_key"):
+            if st.button(t("navbar_reevaluate"), use_container_width=True, type="primary"):
+                try:
+                    from ai_analyzer import analyze_vacancy
+                    sync_widgets_to_data(d)
+                    with st.spinner(t("vacancy_analyzing")):
+                        new_result = analyze_vacancy(
+                            d, vacancy_text,
+                            st.session_state.ai_api_key,
+                            st.session_state.ai_model,
+                        )
+                    st.session_state.analysis_result = _sanitize_ai_result(new_result)
+                    st.rerun()
+                except Exception as e:
+                    st.error(t("vacancy_error").format(str(e)))
+
+    st.divider()
+
+
+def _render_eval_tab(d: dict):
+    """Renderiza el contenido del tab de evaluación detallada."""
+    st.subheader(t("eval_header"))
+
+    vacancy_text = st.session_state.get("vacancy_text", "").strip()
+    if not vacancy_text:
+        st.info(t("eval_no_vacancy"))
+        return
+
+    if not st.session_state.get("ai_api_key"):
+        st.warning(t("chat_need_api"))
+        return
+
+    if st.button(t("eval_generate"), type="primary"):
+        try:
+            from ai_analyzer import evaluate_cv_detailed
+            sync_widgets_to_data(d)
+            with st.spinner(t("eval_generating")):
+                eval_result = evaluate_cv_detailed(
+                    d, vacancy_text,
+                    st.session_state.ai_api_key,
+                    st.session_state.ai_model,
+                )
+            st.session_state.eval_result = eval_result
+        except Exception as e:
+            st.error(t("vacancy_error").format(str(e)))
+
+    ev = st.session_state.eval_result
+    if not ev:
+        return
+
+    # ── Score principal ──
+    score = ev.get("overall_score", 0)
+    label = ev.get("score_label", "")
+    if score > 70:
+        color = "#28a745"
+    elif score >= 40:
+        color = "#fd7e14"
+    else:
+        color = "#dc3545"
+
+    st.markdown(
+        f"<div style='text-align:center;margin:1rem 0;'>"
+        f"<span style='font-size:3rem;font-weight:bold;color:{color};'>{score}%</span>"
+        f"<br><span style='font-size:1.1rem;color:#666;'>{label}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ── Dimensiones ──
+    dims = ev.get("dimensions", [])
+    if dims:
+        st.subheader(t("eval_dimensions"))
+        for dim in dims:
+            d_score = dim.get("score", 0)
+            status = dim.get("status", "ok")
+            emoji = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
+            st.markdown(f"{emoji} **{dim.get('name', '')}** — {d_score}%")
+            st.progress(min(d_score, 100) / 100)
+
+    st.divider()
+
+    # ── Requisitos ──
+    reqs = ev.get("requirements", [])
+    if reqs:
+        st.subheader(t("eval_requirements"))
+        for req in reqs:
+            status = req.get("status", "ok")
+            emoji = "✅" if status == "ok" else ("⚠️" if status == "warn" else "❌")
+            st.markdown(f"{emoji} **{req.get('name', '')}**")
+            if req.get("note"):
+                st.caption(req["note"])
+
+    st.divider()
+
+    # ── Overfitting ──
+    ovf = ev.get("overfitting", [])
+    if ovf:
+        st.subheader(t("eval_overfitting"))
+        for item in ovf:
+            severity = item.get("severity", "warn")
+            claim = item.get("claim", "")
+            reason = item.get("reason", "")
+            if severity == "bad":
+                st.error(f"**{claim}** — {reason}")
+            else:
+                st.warning(f"**{claim}** — {reason}")
+    else:
+        st.subheader(t("eval_overfitting"))
+        st.success("No se detectaron problemas de overfitting.")
+
+    st.divider()
+
+    # ── Veredictos ──
+    verdicts = ev.get("verdicts", [])
+    if verdicts:
+        st.subheader(t("eval_verdicts"))
+        for v in verdicts:
+            vtype = v.get("type", "ok")
+            title = v.get("title", "")
+            text = v.get("text", "")
+            if vtype == "ok":
+                st.success(f"**{title}**\n\n{text}")
+            elif vtype == "warn":
+                st.warning(f"**{title}**\n\n{text}")
+            else:
+                st.error(f"**{title}**\n\n{text}")
+
+
+def _apply_chat_patch(data: dict, patch: dict):
+    """Aplica un patch del chat asesor al diccionario del CV."""
+    field = patch.get("field")
+    idx = patch.get("target_index", 0) or 0
+    action = patch.get("action", "append")
+    content = patch.get("content", "")
+
+    if field == "summary":
+        if action == "replace":
+            data["summary"] = content
+        else:
+            data["summary"] = data.get("summary", "") + "\n" + content
+
+    elif field == "experience_bullet":
+        exps = data.get("experiences", [])
+        if 0 <= idx < len(exps):
+            if action == "replace":
+                exps[idx]["bullets"] = content
+            else:
+                current = exps[idx].get("bullets", "").rstrip()
+                exps[idx]["bullets"] = current + "\n" + content if current else content
+
+    elif field == "experience_title":
+        exps = data.get("experiences", [])
+        if 0 <= idx < len(exps):
+            exps[idx]["title"] = content
+
+    elif field == "skill_line":
+        skills = data.get("skills", [])
+        if 0 <= idx < len(skills):
+            if action == "replace":
+                skills[idx]["text"] = content
+            else:
+                skills[idx]["text"] = skills[idx].get("text", "") + ", " + content
+
+    elif field == "project_description":
+        projs = data.get("projects", [])
+        if 0 <= idx < len(projs):
+            if action == "replace":
+                projs[idx]["description"] = content
+            else:
+                current = projs[idx].get("description", "").rstrip()
+                projs[idx]["description"] = current + "\n" + content if current else content
+
+    elif field == "project_new":
+        data.setdefault("projects", []).append({
+            "id": uid(), "name": content, "url": "", "description": "",
+        })
 
 
 if __name__ == "__main__":

@@ -20,3 +20,9 @@ logs/
 
 # Archivos generados
 *.pdf
+
+# Análisis HTML de evaluación (archivos de usuario, no del proyecto)
+cv_*.html
+*_analysis.html
+*_evaluation.html
+*_match_analysis.html

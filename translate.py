@@ -9,6 +9,55 @@ except ImportError:
     TRANSLATOR_AVAILABLE = False
 
 
+# Mapeo de etiquetas de skills es↔en
+_SKILL_LABELS = {
+    "en": {
+        # Categorías de skills
+        "Dominio avanzado": "Core skills",
+        "dominio avanzado": "Core skills",
+        "Advanced domain": "Core skills",
+        "advanced domain": "Core skills",
+        "Dominio intermedio": "Working knowledge",
+        "dominio intermedio": "Working knowledge",
+        "Intermediate domain": "Working knowledge",
+        "intermediate domain": "Working knowledge",
+        "Familiaridad": "Exposure to",
+        "familiaridad": "Exposure to",
+        "Familiarity": "Exposure to",
+        "familiarity": "Exposure to",
+        # Términos técnicos que Google Translate mangla
+        "IA/ML": "AI/ML",
+        "Ia/ml": "AI/ML",
+        "RAG híbrido": "Hybrid RAG",
+        "RAG Híbrido": "Hybrid RAG",
+        "rag híbrido": "Hybrid RAG",
+        "híbrido": "hybrid",
+        "Híbrido": "Hybrid",
+        "Certs:": "Certs:",
+        "certificaciones": "certifications",
+    },
+    "es": {
+        "Core skills": "Dominio avanzado",
+        "core skills": "Dominio avanzado",
+        "Working knowledge": "Dominio intermedio",
+        "working knowledge": "Dominio intermedio",
+        "Exposure to": "Familiaridad",
+        "exposure to": "Familiaridad",
+        "AI/ML": "IA/ML",
+        "Hybrid RAG": "RAG híbrido",
+        "hybrid": "híbrido",
+    },
+}
+
+
+def _fix_skill_labels(text: str, target_lang: str) -> str:
+    """Reemplaza etiquetas de skills con la traducción correcta."""
+    replacements = _SKILL_LABELS.get(target_lang, {})
+    for wrong, right in replacements.items():
+        text = text.replace(wrong, right)
+    return text
+
+
 def translate_text(text: str, source: str, target: str) -> str:
     """Traduce un texto usando Google Translate gratuito.
     Respeta saltos de línea traduciendo línea por línea."""
@@ -110,6 +159,8 @@ def translate_cv_data(data: dict, source: str, target: str,
     # ── Skills ───────────────────────────────────────────────
     for i, sk in enumerate(translated.get("skills", [])):
         sk["text"] = step(f"skill_{i}", sk.get("text", ""), source, target)
+        # Reemplazo determinístico de etiquetas de skills (Google Translate las mangla)
+        sk["text"] = _fix_skill_labels(sk["text"], target)
 
     print("--- Traducción finalizada ---")
     return translated
