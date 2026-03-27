@@ -7,6 +7,7 @@ venv/
 
 # Datos personales (¡IMPORTANTE!)
 config_personal.json
+banco_personal.json
 .ai_config.json
 
 # Herramientas y editores

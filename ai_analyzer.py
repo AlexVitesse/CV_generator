@@ -113,12 +113,25 @@ porque es un hecho implícito (RunPod usa Docker).
 
 ═══ ESTRATEGIA DE ADAPTACIÓN ═══
 
-1. KEYWORDS — Reformula bullets existentes usando vocabulario del JD:
-   - Si el JD dice "scalable backend systems" y el candidato tiene "APIs REST en FastAPI", \
+1. ESPEJO DE VOCABULARIO (MÁXIMO IMPACTO ATS) — Usa EXACTAMENTE la terminología del JD:
+   - Si el JD dice "agentes conversacionales" y el CV dice "asistentes virtuales" → reescribe como "agentes conversacionales". \
+Es el MISMO concepto, solo cambia la etiqueta. Esto NO es mentir, es hablar el idioma del reclutador.
+   - Si el JD dice "microservices" y el candidato tiene "servicios desplegados por separado" → usa "microservices".
+   - Si el JD dice "scalable backend systems" y el candidato tiene "APIs REST en FastAPI" → \
 reescribe: "Construyó backend systems escalables con FastAPI, procesando 1,200+ solicitudes diarias..."
+   - APLICA ESTO EN TODOS LOS CAMPOS: summary, bullets, proyectos. Cada keyword del JD que tenga \
+equivalente real en el CV DEBE aparecer con la MISMA PALABRA que usa el JD.
    - Solo reformula lo que REALMENTE hizo. No agregues capacidades que no tiene.
 
-2. REORDENAMIENTO — Los bullets más relevantes al JD van PRIMERO.
+2. DETECCIÓN DE KEYWORDS CRÍTICAS POR FRECUENCIA — Analiza cuántas veces aparece cada tecnología en el JD:
+   - Si una tecnología aparece 3+ veces en el JD → es CRÍTICA para el ATS. El reclutador la marcó como prioritaria.
+   - Si esa tecnología crítica NO está en el CV → ponla PRIMERO en missing_keywords y en el reasoning \
+explica: "⚠️ [Tecnología] aparece N veces en la vacante y no está en el CV — alto riesgo de filtro ATS."
+   - Si el candidato tiene experiencia EQUIVALENTE (ej: Oracle Cloud cuando piden Azure), sugiere en reasoning \
+una acción concreta: "El candidato podría crear una demo con [tecnología] free tier para poder mencionarla con honestidad."
+   - NUNCA agregues la tecnología al CV si el candidato no la tiene. Solo señala el gap y sugiere cómo cerrarlo.
+
+3. REORDENAMIENTO — Los bullets más relevantes al JD van PRIMERO.
 
 ═══ REGLAS DE FORMATO ═══
 
@@ -215,7 +228,7 @@ def build_analysis_prompt(cv_data: dict, vacancy_text: str) -> str:
     )
 
 
-def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str) -> dict:
+def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str, extra_context: str = "") -> dict:
     """Envía CV + vacante a Ollama Cloud y retorna el análisis parseado."""
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
@@ -223,6 +236,13 @@ def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str) 
         raise ValueError("Se requiere API key de Ollama Cloud")
 
     user_prompt = build_analysis_prompt(cv_data, vacancy_text)
+    if extra_context:
+        user_prompt += (
+            "\n\nCONTEXTO ADICIONAL DEL CANDIDATO:\n"
+            f"{extra_context}\n"
+            "IMPORTANTE: El candidato confirma tener estas habilidades/experiencias adicionales. "
+            "Incorpóralas en tus sugerencias manteniendo las reglas anti-overfitting."
+        )
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Log request
@@ -318,6 +338,100 @@ REGLAS:
 7. Mantén respuestas concisas (máx 200 palabras) a menos que el usuario pida detalle."""
 
 
+SUMMARY_SYSTEM_PROMPT = """\
+Eres un experto en reclutamiento y redacción de CVs.
+Tu trabajo es generar un resumen profesional (Summary/Elevator Pitch) de 2-3 oraciones \
+que el candidato pueda copiar y pegar directamente en LinkedIn, portales de empleo o emails.
+
+REGLAS:
+1. IDIOMA — Escribe en el idioma indicado por el usuario ({lang}).
+2. Usa tercera persona implícita o primera persona profesional según el estándar del idioma.
+3. Menciona: rol objetivo, stack/especialidad principal, logro destacado.
+4. Si hay vacante, adapta el tono y keywords a esa vacante.
+5. NO inventes experiencia ni años que no existan en el CV.
+6. Máximo 60 palabras. Directo, sin fluff."""
+
+COVER_LETTER_SYSTEM_PROMPT = """\
+Eres un experto en reclutamiento y redacción de cartas de presentación.
+Tu trabajo es generar una Cover Letter profesional, concisa y personalizada.
+
+REGLAS:
+1. IDIOMA — Escribe en el idioma indicado por el usuario ({lang}).
+2. ESTRUCTURA:
+   - Saludo dirigido a la empresa (usa el nombre proporcionado).
+   - Párrafo 1: Por qué te interesa el rol y la empresa (2-3 oraciones).
+   - Párrafo 2: Tus fortalezas relevantes con evidencia concreta del CV (3-4 oraciones).
+   - Párrafo 3: Cierre con call-to-action (1-2 oraciones).
+3. NO inventes experiencia. Usa SOLO datos reales del CV.
+4. Tono: profesional pero cercano, sin ser genérico.
+5. Máximo 250 palabras.
+6. NO incluyas encabezados de carta formal (fecha, dirección). Solo el cuerpo."""
+
+
+def generate_text(
+    cv_data: dict,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_instruction: str,
+    vacancy_text: str = "",
+) -> str:
+    """Genera texto libre (summary, cover letter, etc.) usando el LLM."""
+    if not AI_AVAILABLE:
+        raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
+    if not api_key:
+        raise ValueError("Se requiere API key de Ollama Cloud")
+
+    context_msg = build_chat_context_message(cv_data, vacancy_text)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{context_msg}\n\n{user_instruction}"},
+    ]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.info("=" * 60)
+    logger.info("GENERATE TEXT — %s", ts)
+    logger.info("Modelo: %s", model)
+
+    response = httpx.post(
+        OLLAMA_CLOUD_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        },
+        timeout=90.0,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    reply = data["message"]["content"].strip()
+
+    logger.info("Generate text response (primeros 300 chars): %s", reply[:300])
+    logger.info("=" * 60)
+
+    return reply
+
+
+REFINE_CHAT_SYSTEM_PROMPT = """\
+Eres un asesor experto en CVs y ATS que ayuda a refinar el análisis de una vacante.
+
+CONTEXTO: El candidato ya analizó su CV contra una vacante y obtuvo un resultado inicial.
+Ahora quiere contarte experiencias, habilidades o proyectos que NO están en su CV para mejorar las sugerencias.
+
+REGLAS:
+1. Responde en el MISMO IDIOMA que el usuario usa en su mensaje.
+2. Cuando el usuario mencione experiencia con una tecnología, pregunta detalles:
+   - ¿Fue en contexto laboral o personal? ¿Cuánto tiempo? ¿Qué resultado obtuvo?
+3. Evalúa si lo mencionado realmente ayuda al match con la vacante.
+4. Sé honesto — si la experiencia es superficial, dilo. No infles.
+5. Al final de cada respuesta, resume brevemente qué se podría agregar al CV.
+6. Mantén respuestas concisas (máx 200 palabras).
+7. NO generes JSON — responde en lenguaje natural conversacional."""
+
+
 def build_chat_context_message(cv_data: dict, vacancy_text: str = "") -> str:
     """Construye el mensaje de contexto con CV y vacante opcional."""
     cv_clean = {k: v for k, v in cv_data.items() if k != "id"}
@@ -335,6 +449,8 @@ def chat_with_advisor(
     api_key: str,
     model: str,
     vacancy_text: str = "",
+    system_prompt_override: str = "",
+    analysis_context: str = "",
 ) -> str:
     """Envía historial de chat a Ollama Cloud y retorna respuesta en texto."""
     if not AI_AVAILABLE:
@@ -343,9 +459,13 @@ def chat_with_advisor(
         raise ValueError("Se requiere API key de Ollama Cloud")
 
     context_msg = build_chat_context_message(cv_data, vacancy_text)
+    if analysis_context:
+        context_msg += f"\n\nRESULTADO DEL ANÁLISIS PREVIO:\n{analysis_context}"
+
+    sys_prompt = system_prompt_override or CHAT_SYSTEM_PROMPT
 
     messages = [
-        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+        {"role": "system", "content": sys_prompt},
         {"role": "user", "content": context_msg},
         {"role": "assistant", "content": "Entendido. Tengo tu CV cargado. ¿En qué puedo ayudarte?"},
     ]
@@ -578,3 +698,116 @@ def evaluate_cv_detailed(
     logger.info("=" * 60)
 
     return parsed
+
+
+# ═══════════════════════════════════════════════════════════════
+# SELECCIÓN DE ITEMS DEL BANCO
+# ═══════════════════════════════════════════════════════════════
+
+BANK_SELECTION_SYSTEM_PROMPT = """\
+Eres un experto en reclutamiento, ATS y optimización de CVs formato Harvard.
+Tu trabajo es seleccionar los items del banco del candidato que son MÁS RELEVANTES \
+para la vacante dada.
+
+═══ REGLAS ═══
+
+1. RELEVANCIA — Selecciona SOLO items que aporten al match con la vacante.
+   - Si la vacante es Backend puro: omite items de AI/ML, trading, IoT a menos que la vacante los mencione.
+   - Si la vacante es AI/ML: incluye items de AI/ML + backend relevante.
+   - Si la vacante es Full Stack: incluye backend, frontend y proyectos web.
+
+2. EXPERIENCIAS — Siempre incluye el ID de la experiencia Y los IDs de los bullets relevantes.
+   - Máximo 7 bullets por experiencia (límite formato Harvard).
+   - Prioriza bullets con métricas cuantitativas y tecnologías mencionadas en el JD.
+
+3. EDUCACIÓN — Incluye SIEMPRE toda la educación (todos los IDs de education).
+
+4. SKILLS — Incluye skills que contengan tecnologías relevantes a la vacante.
+
+5. SUMMARIES — Selecciona EL summary más relevante a la vacante.
+
+6. PROYECTOS — Selecciona proyectos que demuestren habilidades pedidas en el JD.
+
+═══ FORMATO DE RESPUESTA ═══
+Responde SOLO con JSON válido, sin markdown:
+{"selected_ids": ["id1", "id2", ...], "reasoning": "<explicación breve en español>"}"""
+
+BANK_SELECTION_USER_TEMPLATE = """\
+VACANTE:
+{vacancy_text}
+
+BANCO DEL CANDIDATO (todos los items disponibles):
+{manifest_json}
+
+Selecciona los IDs de items que deben incluirse en el CV para esta vacante.
+Responde con JSON: {{"selected_ids": ["id1", "id2", ...], "reasoning": "..."}}"""
+
+
+def select_from_bank(
+    manifest: list[dict], vacancy_text: str, api_key: str, model: str
+) -> list[str]:
+    """Pide a la IA que seleccione qué items del banco activar para una vacante.
+
+    Retorna lista de IDs seleccionados.
+    """
+    if not AI_AVAILABLE:
+        raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
+    if not api_key:
+        raise ValueError("Se requiere API key de Ollama Cloud")
+
+    manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
+    user_prompt = BANK_SELECTION_USER_TEMPLATE.format(
+        vacancy_text=vacancy_text, manifest_json=manifest_json
+    )
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    logger.info("=" * 60)
+    logger.info("SELECCIÓN DE BANCO — %s", ts)
+    logger.info("Modelo: %s | Items en manifest: %d", model, len(manifest))
+
+    req_file = os.path.join(_LOG_DIR, f"bank_select_request_{ts}.json")
+    with open(req_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "timestamp": ts,
+            "model": model,
+            "system_prompt": BANK_SELECTION_SYSTEM_PROMPT,
+            "user_prompt": user_prompt,
+        }, f, ensure_ascii=False, indent=2)
+
+    response = httpx.post(
+        OLLAMA_CLOUD_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": BANK_SELECTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": False,
+        },
+        timeout=90.0,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    raw = data["message"]["content"].strip()
+
+    logger.info("Bank selection response (primeros 500 chars): %s", raw[:500])
+
+    resp_file = os.path.join(_LOG_DIR, f"bank_select_response_{ts}.json")
+    with open(resp_file, "w", encoding="utf-8") as f:
+        json.dump({"timestamp": ts, "raw_response": raw}, f, ensure_ascii=False, indent=2)
+
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        raw = "\n".join(lines)
+
+    parsed = json.loads(raw)
+    selected_ids = parsed.get("selected_ids", [])
+    reasoning = parsed.get("reasoning", "")
+
+    logger.info("IDs seleccionados: %d | Reasoning: %s", len(selected_ids), reasoning[:200])
+    logger.info("=" * 60)
+
+    return selected_ids

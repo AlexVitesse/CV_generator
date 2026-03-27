@@ -14,6 +14,7 @@
 
 import streamlit as st
 import json
+import html as _html
 import re
 import uuid
 import os
@@ -315,8 +316,24 @@ def main():
     )
 
     # ── Inicialización ───────────────────────────────────────
+    # ── Banco de habilidades ──
+    if "banco" not in st.session_state:
+        from banco import load_banco, migrate_from_config, save_banco
+        _banco = load_banco()
+        if not _banco:
+            # Intentar migrar desde config_personal.json
+            cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_personal.json")
+            if os.path.exists(cfg_path):
+                _banco = migrate_from_config(cfg_path)
+                save_banco(_banco)
+        st.session_state.banco = _banco
+
     if "cv" not in st.session_state:
-        st.session_state.cv = default_cv_data()
+        if st.session_state.get("banco"):
+            from banco import bank_to_active_cv
+            st.session_state.cv = bank_to_active_cv(st.session_state.banco)
+        else:
+            st.session_state.cv = default_cv_data()
     if "lang" not in st.session_state:
         st.session_state.lang = "es"
     if "content_lang" not in st.session_state:
@@ -338,6 +355,10 @@ def main():
         st.session_state.chat_messages = []
     if "chat_pending_patch" not in st.session_state:
         st.session_state.chat_pending_patch = None
+    if "refine_chat_open" not in st.session_state:
+        st.session_state.refine_chat_open = False
+    if "refine_messages" not in st.session_state:
+        st.session_state.refine_messages = []
 
     d = st.session_state.cv
 
@@ -436,26 +457,92 @@ def main():
             except Exception as e:
                 st.error(t("pdf_error").format(e))
 
+        # ── Empresa destino (siempre visible para nombre PDF + cover letter) ──
+        import re as _re
+        _company_raw = st.text_input(
+            t("target_company"),
+            key="target_company_input",
+            placeholder="Ej: Excelia",
+        )
+        if _company_raw:
+            st.session_state._target_company = _company_raw
+
         if "pdf_bytes" in st.session_state:
             lang_suffix = st.session_state.lang.upper()
+            _name = d.get("name", "")
+            _initials = "".join(w[0] for w in _name.split() if w).upper() if _name else "XX"
+            _co = st.session_state.get("_target_company", "")
+            _company = _re.sub(r'[^\w]', '', _co).strip() if _co else ""
+            _pdf_name = f"CV_{_initials}_{_company}.pdf" if _company else f"CV_{_initials}_{lang_suffix}.pdf"
             st.download_button(
                 t("download_pdf"),
                 data=st.session_state.pdf_bytes,
-                file_name=f"cv_harvard_{lang_suffix}.pdf",
+                file_name=_pdf_name,
                 mime="application/pdf",
                 use_container_width=True,
             )
 
+        # ── Summary y Cover Letter ────────────────────────
+        if AI_AVAILABLE and st.session_state.get("ai_api_key"):
+            st.divider()
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                if st.button(t("generate_summary"), use_container_width=True):
+                    try:
+                        from ai_analyzer import generate_text, SUMMARY_SYSTEM_PROMPT
+                        sync_widgets_to_data(d)
+                        lang_name = "español" if st.session_state.content_lang == "es" else "English"
+                        vacancy_ctx = st.session_state.get("vacancy_text", "").strip()
+                        with st.spinner(t("summary_generating")):
+                            summary = generate_text(
+                                d,
+                                st.session_state.ai_api_key,
+                                st.session_state.ai_model,
+                                SUMMARY_SYSTEM_PROMPT.format(lang=lang_name),
+                                f"Genera un summary/elevator pitch en {lang_name}.",
+                                vacancy_text=vacancy_ctx,
+                            )
+                        st.session_state._generated_summary = summary
+                    except Exception as e:
+                        st.error(str(e))
+            with sc2:
+                if st.button(t("generate_cover"), use_container_width=True):
+                    _co = st.session_state.get("_target_company", "").strip()
+                    vacancy_ctx = st.session_state.get("vacancy_text", "").strip()
+                    if not _co:
+                        st.warning(t("cover_no_company"))
+                    elif not vacancy_ctx:
+                        st.warning(t("cover_no_vacancy"))
+                    else:
+                        try:
+                            from ai_analyzer import generate_text, COVER_LETTER_SYSTEM_PROMPT
+                            sync_widgets_to_data(d)
+                            lang_name = "español" if st.session_state.content_lang == "es" else "English"
+                            with st.spinner(t("cover_generating")):
+                                cover = generate_text(
+                                    d,
+                                    st.session_state.ai_api_key,
+                                    st.session_state.ai_model,
+                                    COVER_LETTER_SYSTEM_PROMPT.format(lang=lang_name),
+                                    f"Genera una cover letter en {lang_name} para la empresa {_co}.",
+                                    vacancy_text=vacancy_ctx,
+                                )
+                            st.session_state._generated_cover = cover
+                        except Exception as e:
+                            st.error(str(e))
+
+            # Mostrar summary generado (st.code tiene botón copiar nativo)
+            if st.session_state.get("_generated_summary"):
+                st.caption("Summary")
+                st.code(st.session_state._generated_summary, language=None)
+
+            # Mostrar cover letter generada
+            if st.session_state.get("_generated_cover"):
+                st.caption(t("cover_result"))
+                st.code(st.session_state._generated_cover, language=None)
+
         st.divider()
         st.subheader(t("data_section"))
-
-        st.download_button(
-            t("export_json"),
-            data=json.dumps(d, ensure_ascii=False, indent=2),
-            file_name="cv_data.json",
-            mime="application/json",
-            use_container_width=True,
-        )
 
         uploaded = st.file_uploader(t("import_json"), type=["json"])
         if uploaded is not None:
@@ -512,9 +599,19 @@ def main():
         else:
             st.warning(t("ai_not_available"))
 
+        # ── Guardar CV al banco ────────────────────────────
+        if st.session_state.get("banco"):
+            st.divider()
+            if st.button(t("banco_save_cv"), use_container_width=True):
+                from banco import merge_cv_to_bank, save_banco
+                sync_widgets_to_data(d)
+                merge_cv_to_bank(d, st.session_state.banco)
+                save_banco(st.session_state.banco)
+                st.toast(t("banco_saved_to_bank"))
+
     # ── Tabs principales ────────────────────────────────────
-    tab_analysis, tab_manual, tab_chat, tab_eval = st.tabs([
-        t("tab_analysis"), t("tab_manual"), t("tab_chat"), t("tab_eval"),
+    tab_analysis, tab_manual, tab_chat, tab_eval, tab_banco = st.tabs([
+        t("tab_analysis"), t("tab_manual"), t("tab_chat"), t("tab_eval"), t("tab_banco"),
     ])
 
     # ══════════════════════════════════════════════════════════
@@ -542,6 +639,7 @@ def main():
                     try:
                         from ai_analyzer import analyze_vacancy
                         sync_widgets_to_data(d)
+
                         with st.spinner(t("vacancy_analyzing")):
                             result = analyze_vacancy(
                                 d, vacancy_text,
@@ -549,6 +647,8 @@ def main():
                                 st.session_state.ai_model,
                             )
                         st.session_state.analysis_result = _sanitize_ai_result(result)
+                        st.session_state._needs_widget_push = True
+                        st.rerun()
                     except Exception as e:
                         st.error(t("vacancy_error").format(str(e)))
 
@@ -669,6 +769,110 @@ def main():
                         st.session_state._needs_reevaluation = True
                         st.session_state.cv_adapted = True
                         st.rerun()
+
+            # ── Chat de refinamiento inline ──────────────────
+            if result:
+                st.divider()
+                refine_messages = st.session_state.get("refine_messages", [])
+
+                if not st.session_state.get("refine_chat_open"):
+                    if st.button("💬 " + t("refine_chat_open"), key="refine_open"):
+                        st.session_state.refine_chat_open = True
+                        st.session_state.refine_messages = []
+                        st.rerun()
+                else:
+                    st.subheader(t("refine_chat_header"))
+                    st.caption(t("refine_chat_caption"))
+
+                    if st.button(t("refine_chat_close"), key="refine_close"):
+                        st.session_state.refine_chat_open = False
+                        st.session_state.refine_messages = []
+                        st.rerun()
+
+                    # Mostrar historial
+                    for msg in refine_messages:
+                        with st.chat_message(msg["role"]):
+                            st.markdown(msg["content"])
+
+                    # Chat input
+                    user_input = st.chat_input(
+                        t("refine_chat_placeholder"), key="refine_input"
+                    )
+                    if user_input:
+                        st.session_state.refine_messages.append(
+                            {"role": "user", "content": user_input}
+                        )
+                        with st.chat_message("user"):
+                            st.markdown(user_input)
+
+                        with st.chat_message("assistant"):
+                            with st.spinner(t("chat_thinking")):
+                                try:
+                                    from ai_analyzer import (
+                                        chat_with_advisor,
+                                        REFINE_CHAT_SYSTEM_PROMPT,
+                                    )
+                                    sync_widgets_to_data(d)
+                                    # Build analysis context summary
+                                    analysis_ctx = (
+                                        f"Score: {result.get('match_score', '?')}% | "
+                                        f"Viable: {result.get('viable', '?')}\n"
+                                        f"Missing keywords: {', '.join(result.get('missing_keywords', []))}\n"
+                                        f"Matching keywords: {', '.join(result.get('matching_keywords', []))}"
+                                    )
+                                    vacancy_ctx = st.session_state.get(
+                                        "vacancy_text", ""
+                                    ).strip()
+                                    reply = chat_with_advisor(
+                                        d,
+                                        st.session_state.refine_messages,
+                                        st.session_state.ai_api_key,
+                                        st.session_state.ai_model,
+                                        vacancy_text=vacancy_ctx,
+                                        system_prompt_override=REFINE_CHAT_SYSTEM_PROMPT,
+                                        analysis_context=analysis_ctx,
+                                    )
+                                    st.markdown(reply)
+                                    st.session_state.refine_messages.append(
+                                        {"role": "assistant", "content": reply}
+                                    )
+                                except Exception as e:
+                                    st.error(t("chat_error").format(str(e)))
+
+                    # Botón: Re-analizar con lo aprendido
+                    if (
+                        refine_messages
+                        and refine_messages[-1]["role"] == "assistant"
+                    ):
+                        if st.button(
+                            "🔄 " + t("refine_reanalyze"), key="refine_reanalyze"
+                        ):
+                            try:
+                                from ai_analyzer import analyze_vacancy
+                                sync_widgets_to_data(d)
+                                extra = "\n".join(
+                                    m["content"]
+                                    for m in refine_messages
+                                    if m["role"] == "user"
+                                )
+                                vacancy_ctx = st.session_state.get(
+                                    "vacancy_text", ""
+                                ).strip()
+                                with st.spinner(t("vacancy_analyzing")):
+                                    new_result = analyze_vacancy(
+                                        d,
+                                        vacancy_ctx,
+                                        st.session_state.ai_api_key,
+                                        st.session_state.ai_model,
+                                        extra_context=extra,
+                                    )
+                                st.session_state.analysis_result = (
+                                    _sanitize_ai_result(new_result)
+                                )
+                                st.session_state._needs_widget_push = True
+                                st.rerun()
+                            except Exception as e:
+                                st.error(t("vacancy_error").format(str(e)))
         else:
             st.info(t("ai_not_available"))
 
@@ -1003,6 +1207,12 @@ def main():
     with tab_eval:
         _render_eval_tab(d)
 
+    # ══════════════════════════════════════════════════════════
+    # TAB 5: BANCO DE HABILIDADES Y PROYECTOS
+    # ══════════════════════════════════════════════════════════
+    with tab_banco:
+        _render_banco_tab(d)
+
 
 def _detect_vacancy_language(text: str) -> str:
     """Detecta si la vacante está en inglés o español con heurística simple."""
@@ -1042,13 +1252,20 @@ def _deferred_translate_and_reevaluate(d: dict):
         except Exception as e:
             st.toast(f"Auto-translate error: {e}")
 
-    # Re-evaluar con el CV actualizado
+    # Re-evaluar con el CV actualizado (preservar extra_context del chat de refinamiento)
     try:
         from ai_analyzer import analyze_vacancy
+        extra_context = ""
+        refine_msgs = st.session_state.get("refine_messages", [])
+        if refine_msgs:
+            extra_context = "\n".join(
+                m["content"] for m in refine_msgs if m["role"] == "user"
+            )
         result = analyze_vacancy(
             d, vacancy_text,
             st.session_state.ai_api_key,
             st.session_state.ai_model,
+            extra_context=extra_context,
         )
         st.session_state.analysis_result = _sanitize_ai_result(result)
         # Limpiar eval_result anterior porque el CV cambió
@@ -1089,7 +1306,7 @@ def _render_score_navbar(d: dict):
 
     with nb2:
         if vacancy_text:
-            label = vacancy_text[:80].replace("\n", " ")
+            label = _html.escape(vacancy_text[:80].replace("\n", " "))
             st.markdown(f"<div style='padding-top:0.6rem;'>📋 {label}...</div>", unsafe_allow_html=True)
         else:
             st.markdown(
@@ -1103,11 +1320,18 @@ def _render_score_navbar(d: dict):
                 try:
                     from ai_analyzer import analyze_vacancy
                     sync_widgets_to_data(d)
+                    extra_context = ""
+                    refine_msgs = st.session_state.get("refine_messages", [])
+                    if refine_msgs:
+                        extra_context = "\n".join(
+                            m["content"] for m in refine_msgs if m["role"] == "user"
+                        )
                     with st.spinner(t("vacancy_analyzing")):
                         new_result = analyze_vacancy(
                             d, vacancy_text,
                             st.session_state.ai_api_key,
                             st.session_state.ai_model,
+                            extra_context=extra_context,
                         )
                     st.session_state.analysis_result = _sanitize_ai_result(new_result)
                     st.rerun()
@@ -1161,7 +1385,7 @@ def _render_eval_tab(d: dict):
     st.markdown(
         f"<div style='text-align:center;margin:1rem 0;'>"
         f"<span style='font-size:3rem;font-weight:bold;color:{color};'>{score}%</span>"
-        f"<br><span style='font-size:1.1rem;color:#666;'>{label}</span>"
+        f"<br><span style='font-size:1.1rem;color:#666;'>{_html.escape(str(label))}</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1226,6 +1450,155 @@ def _render_eval_tab(d: dict):
                 st.warning(f"**{title}**\n\n{text}")
             else:
                 st.error(f"**{title}**\n\n{text}")
+
+
+def _render_banco_tab(d: dict):
+    """Renderiza el tab del Banco de Habilidades y Proyectos."""
+    from banco import (
+        load_banco, save_banco, migrate_from_config, bank_to_active_cv,
+        count_bank_items, toggle_all, generate_bank_id,
+    )
+
+    banco = st.session_state.get("banco", {})
+
+    # ── Si no hay banco, mostrar opción de importar ──
+    if not banco or not banco.get("experiences"):
+        st.info(t("banco_empty"))
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_personal.json")
+        if os.path.exists(cfg_path):
+            if st.button(t("banco_import"), type="primary"):
+                banco = migrate_from_config(cfg_path)
+                save_banco(banco)
+                st.session_state.banco = banco
+                st.session_state.cv = bank_to_active_cv(banco)
+                st.session_state._needs_widget_push = True
+                st.toast(t("banco_migrated"))
+                st.rerun()
+        return
+
+    st.subheader(t("banco_header"))
+    st.caption(t("banco_caption"))
+
+    # ── Stats y botones principales ──
+    total, active = count_bank_items(banco)
+
+    col_stats, col_all, col_none, col_save = st.columns([4, 2, 2, 2])
+    with col_stats:
+        st.markdown(f"**{t('banco_item_count').format(active, total)}**")
+    with col_all:
+        if st.button(t("banco_toggle_all"), use_container_width=True):
+            toggle_all(banco, True)
+            save_banco(banco)
+            st.rerun()
+    with col_none:
+        if st.button(t("banco_deactivate_all"), use_container_width=True):
+            toggle_all(banco, False)
+            save_banco(banco)
+            st.rerun()
+    with col_save:
+        if st.button(t("banco_save"), type="primary", use_container_width=True):
+            save_banco(banco)
+            st.toast(t("banco_saved"))
+
+    # ── Resúmenes ──
+    with st.expander(t("banco_summaries"), expanded=False):
+        for s in banco.get("summaries", []):
+            cols = st.columns([1, 11])
+            with cols[0]:
+                new_val = st.checkbox("on", value=s.get("active", True), key=f"bk_{s['id']}", label_visibility="collapsed")
+                if new_val != s.get("active", True):
+                    s["active"] = new_val
+            with cols[1]:
+                label = _html.escape(s.get("label", "Sin label"))
+                preview = _html.escape(s["text"][:120] + ("..." if len(s["text"]) > 120 else ""))
+                style = "" if s.get("active", True) else "opacity:0.4;"
+                st.markdown(f"<div style='{style}'><b>{label}</b><br><small>{preview}</small></div>",
+                            unsafe_allow_html=True)
+
+    # ── Experiencias con bullets ──
+    with st.expander(t("banco_experiences"), expanded=True):
+        for exp in banco.get("experiences", []):
+            exp_active = st.checkbox(
+                f"**{exp.get('company', '')}** — {exp.get('title', '')}",
+                value=exp.get("active", True),
+                key=f"bk_{exp['id']}",
+            )
+            if exp_active != exp.get("active", True):
+                exp["active"] = exp_active
+
+            if exp.get("active", True):
+                for bul in exp.get("bullets", []):
+                    cols = st.columns([1, 9, 2])
+                    with cols[0]:
+                        bul_active = st.checkbox("on", value=bul.get("active", True), key=f"bk_{bul['id']}", label_visibility="collapsed")
+                        if bul_active != bul.get("active", True):
+                            bul["active"] = bul_active
+                    with cols[1]:
+                        preview = _html.escape(bul["text"][:100] + ("..." if len(bul["text"]) > 100 else ""))
+                        style = "" if bul.get("active", True) else "opacity:0.4;text-decoration:line-through;"
+                        st.markdown(f"<div style='{style}'>{preview}</div>", unsafe_allow_html=True)
+                    with cols[2]:
+                        tags = bul.get("tags", [])
+                        if tags:
+                            st.caption(" ".join(f"`{tg}`" for tg in tags))
+
+    # ── Proyectos ──
+    with st.expander(t("banco_projects"), expanded=False):
+        for proj in banco.get("projects", []):
+            cols = st.columns([1, 9, 2])
+            with cols[0]:
+                new_val = st.checkbox("on", value=proj.get("active", True), key=f"bk_{proj['id']}", label_visibility="collapsed")
+                if new_val != proj.get("active", True):
+                    proj["active"] = new_val
+            with cols[1]:
+                style = "" if proj.get("active", True) else "opacity:0.4;"
+                st.markdown(
+                    f"<div style='{style}'><b>{_html.escape(proj.get('name', ''))}</b><br>"
+                    f"<small>{_html.escape(proj.get('description', '')[:100])}...</small></div>",
+                    unsafe_allow_html=True,
+                )
+            with cols[2]:
+                tags = proj.get("tags", [])
+                if tags:
+                    st.caption(" ".join(f"`{tg}`" for tg in tags))
+
+    # ── Skills ──
+    with st.expander(t("banco_skills"), expanded=False):
+        for sk in banco.get("skills", []):
+            cols = st.columns([1, 11])
+            with cols[0]:
+                new_val = st.checkbox("on", value=sk.get("active", True), key=f"bk_{sk['id']}", label_visibility="collapsed")
+                if new_val != sk.get("active", True):
+                    sk["active"] = new_val
+            with cols[1]:
+                style = "" if sk.get("active", True) else "opacity:0.4;"
+                st.markdown(f"<div style='{style}'>{_html.escape(sk['text'][:150])}</div>", unsafe_allow_html=True)
+
+    # ── Educación ──
+    with st.expander(t("banco_education"), expanded=False):
+        for edu in banco.get("education", []):
+            cols = st.columns([1, 11])
+            with cols[0]:
+                new_val = st.checkbox("on", value=edu.get("active", True), key=f"bk_{edu['id']}", label_visibility="collapsed")
+                if new_val != edu.get("active", True):
+                    edu["active"] = new_val
+            with cols[1]:
+                style = "" if edu.get("active", True) else "opacity:0.4;"
+                st.markdown(
+                    f"<div style='{style}'><b>{_html.escape(edu.get('institution', ''))}</b> — "
+                    f"{_html.escape(edu.get('degree', ''))}</div>",
+                    unsafe_allow_html=True,
+                )
+
+    st.divider()
+
+    # ── Aplicar selección al CV ──
+    if st.button(t("banco_apply"), type="primary", use_container_width=True):
+        save_banco(banco)
+        st.session_state.cv = bank_to_active_cv(banco)
+        st.session_state._needs_widget_push = True
+        st.toast(t("banco_applied"))
+        st.rerun()
 
 
 def _apply_chat_patch(data: dict, patch: dict):
