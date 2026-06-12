@@ -3,8 +3,12 @@ Generación de PDF en formato Harvard para el CV Generator.
 """
 
 import os
+import re
+import unicodedata
 from io import BytesIO
 from xml.sax.saxutils import escape as xml_escape
+
+from pypdf import PdfReader
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -25,7 +29,7 @@ from i18n import LANG
 # CONFIGURACIÓN DE FUENTES
 # ═══════════════════════════════════════════════════════════════
 
-BULLET_CHAR = "\u2022"
+BULLET_CHAR = "\u00b7"  # middle dot: render fiable en Times-Roman/WinAnsi (era "\u2022" = cuadro negro)
 BULLET_FONT = "Times-Roman"
 BULLET_FONT_SIZE = 10
 
@@ -51,198 +55,266 @@ for _p in _DEJAVU_PATHS:
 # HELPERS
 # ═══════════════════════════════════════════════════════════════
 
+# Reemplazos Unicode → seguros en WinAnsi. Los guiones especiales son la causa principal:
+# reportlab no puede dibujarlos con las fuentes estándar y cae a ZapfDingbats (cuadro negro).
+_PDF_CHAR_MAP = {
+    "‐": "-", "‑": "-", "‒": "-", "⁃": "-",  # variantes de guion → "-"
+    "­": "",                                                # soft hyphen
+    "​": "", "‌": "", "‍": "", "﻿": "",      # caracteres de ancho cero
+    " ": " ", " ": " ", " ": " ",                 # nbsp / narrow / thin space
+    " ": " ", " ": " ",                                # en/em space
+    "•": "·", "●": "·",                      # bullet/círculo → middle dot
+    "‘": "'", "’": "'", "′": "'",                 # comillas simples / prima
+    "“": '"', "”": '"', "″": '"',                 # comillas dobles / doble prima
+    "…": "...",                                             # puntos suspensivos
+}
+
+
+def _cp1252_ok(ch: str) -> bool:
+    try:
+        ch.encode("cp1252")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _winansi_safe(text: str) -> str:
+    """Convierte caracteres Unicode no soportados por las fuentes estándar (WinAnsi) en
+    equivalentes seguros, evitando los cuadros negros del fallback a ZapfDingbats."""
+    out = []
+    for ch in text:
+        if ch in _PDF_CHAR_MAP:
+            out.append(_PDF_CHAR_MAP[ch])
+            continue
+        try:
+            # Validamos si el char codifica directo en cp1252 de forma estricta
+            ch.encode("cp1252", errors="strict")
+            out.append(ch)
+            continue
+        except UnicodeEncodeError:
+            pass
+        # carácter exótico → descomponer y conservar solo lo representable, si no se omite
+        norm = unicodedata.normalize("NFKD", ch)
+        out.append("".join(c for c in norm if _cp1252_ok(c)))
+    return "".join(out)
+
+
 def safe(text: str) -> str:
-    """Escapa caracteres especiales XML para uso seguro en PDF."""
-    return xml_escape(str(text or ""))
+    """Escapa caracteres especiales XML para uso seguro en PDF y convierte Markdown básico a HTML."""
+    val = str(text or "")
+    # Remover caracteres de control inválidos para ReportLab (0x00-0x1F excepto \n y \t)
+    val = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", val)
+    escaped = xml_escape(_winansi_safe(val))
+    # Convertir **negrita** a <b>negrita</b>
+    escaped = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", escaped)
+    # Convertir *cursiva* a <i>cursiva</i>
+    escaped = re.sub(r"\*(.*?)\*", r"<i>\1</i>", escaped)
+    return escaped
 
 
 # ═══════════════════════════════════════════════════════════════
 # GENERACIÓN DE PDF
 # ═══════════════════════════════════════════════════════════════
 
-def generate_cv_pdf(data: dict, lang: str = "es") -> BytesIO:
-    """Genera un PDF de CV en formato Harvard."""
+def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
+    """Genera un PDF de CV en formato Harvard, escalando dinámicamente si excede 1 página.
+    Retorna (buffer, cabe_en_1_pagina)."""
 
     labels = LANG.get(lang, LANG["es"])
 
-    buf = BytesIO()
-    pw, ph = letter
-    ml = mr = 0.7 * inch
-    mt = mb = 0.5 * inch
-    aw = pw - ml - mr
+    # Probamos factores de escala desde 1.0 hasta 0.80 para forzar que quepa en 1 sola página
+    for sf in [1.0, 0.94, 0.88, 0.82, 0.76]:
+        buf = BytesIO()
+        pw, ph = letter
+        ml = mr = 0.55 * inch
+        mt = mb = 0.4 * inch
+        aw = pw - ml - mr
 
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        topMargin=mt, bottomMargin=mb,
-        leftMargin=ml, rightMargin=mr,
-    )
-
-    # ── Estilos ──────────────────────────────────────────────
-    s_name = ParagraphStyle(
-        "Name", fontName="Times-Bold", fontSize=16,
-        alignment=TA_CENTER, spaceAfter=4, leading=20,
-    )
-    s_contact = ParagraphStyle(
-        "Contact", fontName="Times-Roman", fontSize=9,
-        alignment=TA_CENTER, spaceAfter=4, leading=12,
-    )
-    s_summary = ParagraphStyle(
-        "Summary", fontName="Times-Roman", fontSize=9.5,
-        alignment=TA_JUSTIFY, spaceAfter=2, leading=12,
-    )
-    s_section = ParagraphStyle(
-        "Section", fontName="Times-Bold", fontSize=11,
-        spaceBefore=6, spaceAfter=0, leading=14,
-    )
-    s_bold_l = ParagraphStyle(
-        "BoldLeft", fontName="Times-Bold", fontSize=10, leading=13,
-    )
-    s_norm_r = ParagraphStyle(
-        "NormRight", fontName="Times-Roman", fontSize=10,
-        alignment=TA_RIGHT, leading=13,
-    )
-    s_ital_l = ParagraphStyle(
-        "ItalLeft", fontName="Times-Italic", fontSize=10, leading=13,
-    )
-    s_ital_r = ParagraphStyle(
-        "ItalRight", fontName="Times-Italic", fontSize=10,
-        alignment=TA_RIGHT, leading=13,
-    )
-    s_bullet = ParagraphStyle(
-        "Bullet", fontName="Times-Roman", fontSize=10,
-        leftIndent=20, firstLineIndent=-14,
-        leading=12, spaceAfter=2,
-    )
-    s_detail = ParagraphStyle(
-        "Detail", fontName="Times-Roman", fontSize=10, leading=12,
-    )
-
-    no_pad = TableStyle([
-        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING",   (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
-    ])
-
-    cw = [aw * 0.65, aw * 0.35]
-
-    def row2(lt, ls, rt, rs):
-        tbl = Table(
-            [[Paragraph(safe(lt), ls), Paragraph(safe(rt), rs)]],
-            colWidths=cw,
+        doc = SimpleDocTemplate(
+            buf, pagesize=letter,
+            topMargin=mt, bottomMargin=mb,
+            leftMargin=ml, rightMargin=mr,
         )
-        tbl.setStyle(no_pad)
-        return tbl
 
-    def bullet_para(text):
-        bchar = (
-            f'<font name="{BULLET_FONT}" size="{BULLET_FONT_SIZE}">'
-            f"{BULLET_CHAR}</font>"
+        # ── Estilos escalados ──────────────────────────────────
+        s_name = ParagraphStyle(
+            "Name", fontName="Times-Bold", fontSize=14 * sf,
+            alignment=TA_CENTER, spaceAfter=2 * sf, leading=17 * sf,
         )
-        return Paragraph(f"{bchar}&nbsp;&nbsp;{safe(text)}", s_bullet)
+        s_contact = ParagraphStyle(
+            "Contact", fontName="Times-Roman", fontSize=9 * sf,
+            alignment=TA_CENTER, spaceAfter=4 * sf, leading=12 * sf,
+        )
+        s_summary = ParagraphStyle(
+            "Summary", fontName="Times-Roman", fontSize=9.5 * sf,
+            alignment=TA_JUSTIFY, spaceAfter=2 * sf, leading=12 * sf,
+        )
+        s_section = ParagraphStyle(
+            "Section", fontName="Times-Bold", fontSize=10.5 * sf,
+            spaceBefore=5 * sf, spaceAfter=0, leading=13 * sf,
+        )
+        s_bold_l = ParagraphStyle(
+            "BoldLeft", fontName="Times-Bold", fontSize=9.5 * sf, leading=12 * sf,
+        )
+        s_norm_r = ParagraphStyle(
+            "NormRight", fontName="Times-Roman", fontSize=9.5 * sf,
+            alignment=TA_RIGHT, leading=12 * sf,
+        )
+        s_ital_l = ParagraphStyle(
+            "ItalLeft", fontName="Times-Italic", fontSize=9.5 * sf, leading=12 * sf,
+        )
+        s_ital_r = ParagraphStyle(
+            "ItalRight", fontName="Times-Italic", fontSize=9.5 * sf,
+            alignment=TA_RIGHT, leading=12 * sf,
+        )
+        s_bullet = ParagraphStyle(
+            "Bullet", fontName="Times-Roman", fontSize=9.5 * sf,
+            leftIndent=20, firstLineIndent=-14,
+            leading=11.5 * sf, spaceAfter=1.5 * sf,
+        )
+        s_detail = ParagraphStyle(
+            "Detail", fontName="Times-Roman", fontSize=9.5 * sf, leading=11.5 * sf,
+        )
 
-    # ── Construcción ─────────────────────────────────────────
-    story = []
+        no_pad = TableStyle([
+            ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING",   (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+        ])
 
-    story.append(Paragraph(safe(data.get("name", "")), s_name))
+        cw = [aw * 0.65, aw * 0.35]
 
-    contact_fields = ["location", "linkedin", "github", "phone", "email"]
-    parts = [data.get(k, "") for k in contact_fields]
-    contact_str = " \u2022 ".join(p.strip() for p in parts if p.strip())
-    story.append(Paragraph(safe(contact_str), s_contact))
+        def row2(lt, ls, rt, rs):
+            tbl = Table(
+                [[Paragraph(safe(lt), ls), Paragraph(safe(rt), rs)]],
+                colWidths=cw,
+            )
+            tbl.setStyle(no_pad)
+            return tbl
 
-    summary = data.get("summary", "").strip()
-    if summary:
-        story.append(Paragraph(safe(summary), s_summary))
+        def bullet_para(text):
+            bchar = (
+                f'<font name="{BULLET_FONT}" size="{BULLET_FONT_SIZE * sf}">'
+                f"{BULLET_CHAR}</font>"
+            )
+            return Paragraph(f"{bchar}&nbsp;&nbsp;{safe(text)}", s_bullet)
 
-    story.append(HRFlowable(
-        width="100%", thickness=0.75, color=black,
-        spaceBefore=4, spaceAfter=2,
-    ))
+        # ── Construcción de la historia ─────────────────────────
+        story = []
 
-    # ── EXPERIENCIA ──────────────────────────────────────────
-    experiences = data.get("experiences", [])
-    if experiences:
-        story.append(Paragraph(labels["pdf_experience"], s_section))
+        story.append(Paragraph(safe(data.get("name", "")), s_name))
+
+        contact_fields = ["location", "linkedin", "github", "phone", "email"]
+        parts = [data.get(k, "") for k in contact_fields]
+        contact_str = " \u00b7 ".join(p.strip() for p in parts if p.strip())
+        story.append(Paragraph(safe(contact_str), s_contact))
+
+        summary = data.get("summary", "").strip()
+        if summary:
+            story.append(Paragraph(safe(summary), s_summary))
+
         story.append(HRFlowable(
-            width="100%", thickness=0.5, color=black,
-            spaceBefore=1, spaceAfter=4,
+            width="100%", thickness=0.75, color=black,
+            spaceBefore=4 * sf, spaceAfter=2 * sf,
         ))
-        for exp in experiences:
-            story.append(row2(
-                exp.get("company", ""), s_bold_l,
-                exp.get("location", ""), s_norm_r,
-            ))
-            story.append(row2(
-                exp.get("title", ""), s_ital_l,
-                exp.get("dates", ""), s_ital_r,
-            ))
-            story.append(Spacer(1, 3))
-            bullets_raw = exp.get("bullets", "")
-            if isinstance(bullets_raw, list):
-                bullets = bullets_raw
-            else:
-                bullets = [b.strip() for b in str(bullets_raw).split("\n")
-                           if b.strip()]
-            for b in bullets:
-                if b.strip():
-                    story.append(bullet_para(b))
-            story.append(Spacer(1, 6))
 
-    # ── PROYECTOS ────────────────────────────────────────────
-    projects = data.get("projects", [])
-    if projects:
-        story.append(Paragraph(labels["pdf_projects"], s_section))
-        story.append(HRFlowable(
-            width="100%", thickness=0.5, color=black,
-            spaceBefore=1, spaceAfter=4,
-        ))
-        for proj in projects:
-            name = proj.get("name", "")
-            url = proj.get("url", "")
-            title_text = f"{name} — {url}" if url else name
-            story.append(Paragraph(safe(title_text), s_bold_l))
-            desc = proj.get("description", "").strip()
-            if desc:
-                story.append(bullet_para(desc))
-            story.append(Spacer(1, 4))
-
-    # ── EDUCACIÓN ────────────────────────────────────────────
-    education = data.get("education", [])
-    if education:
-        story.append(Paragraph(labels["pdf_education"], s_section))
-        story.append(HRFlowable(
-            width="100%", thickness=0.5, color=black,
-            spaceBefore=1, spaceAfter=4,
-        ))
-        for edu in education:
-            story.append(row2(
-                edu.get("institution", ""), s_bold_l,
-                edu.get("location", ""), s_norm_r,
+        # ── EXPERIENCIA ──────────────────────────────────────────
+        experiences = data.get("experiences", [])
+        if experiences:
+            story.append(Paragraph(labels["pdf_experience"], s_section))
+            story.append(HRFlowable(
+                width="100%", thickness=0.5, color=black,
+                spaceBefore=1 * sf, spaceAfter=4 * sf,
             ))
-            story.append(row2(
-                edu.get("degree", ""), s_ital_l,
-                edu.get("date", ""), s_ital_r,
+            for exp in experiences:
+                story.append(row2(
+                    exp.get("company", ""), s_bold_l,
+                    exp.get("location", ""), s_norm_r,
+                ))
+                story.append(row2(
+                    exp.get("title", ""), s_ital_l,
+                    exp.get("dates", ""), s_ital_r,
+                ))
+                story.append(Spacer(1, 3 * sf))
+                bullets_raw = exp.get("bullets", "")
+                if isinstance(bullets_raw, list):
+                    bullets = bullets_raw
+                else:
+                    bullets = [b.strip() for b in str(bullets_raw).split("\n")
+                               if b.strip()]
+                for b in bullets:
+                    if b.strip():
+                        story.append(bullet_para(b))
+                story.append(Spacer(1, 6 * sf))
+
+        # ── PROYECTOS ────────────────────────────────────────────
+        projects = data.get("projects", [])
+        if projects:
+            story.append(Paragraph(labels["pdf_projects"], s_section))
+            story.append(HRFlowable(
+                width="100%", thickness=0.5, color=black,
+                spaceBefore=1 * sf, spaceAfter=4 * sf,
             ))
-            details = edu.get("details", "").strip()
-            if details:
-                story.append(Paragraph(safe(details), s_detail))
-            story.append(Spacer(1, 6))
+            for proj in projects:
+                name = proj.get("name", "")
+                url = proj.get("url", "")
+                title_text = f"{name} — {url}" if url else name
+                story.append(row2(title_text, s_bold_l, "", s_norm_r))
+                desc = proj.get("description", "").strip()
+                if desc:
+                    story.append(bullet_para(desc))
+                story.append(Spacer(1, 4 * sf))
 
-    # ── SKILLS ───────────────────────────────────────────────
-    skills = data.get("skills", [])
-    if skills:
-        story.append(Paragraph(labels["pdf_skills"], s_section))
-        story.append(HRFlowable(
-            width="100%", thickness=0.5, color=black,
-            spaceBefore=1, spaceAfter=4,
-        ))
-        for sk in skills:
-            text = sk.get("text", sk) if isinstance(sk, dict) else str(sk)
-            if text.strip():
-                story.append(bullet_para(text))
+        # ── EDUCACIÓN ────────────────────────────────────────────
+        education = data.get("education", [])
+        if education:
+            story.append(Paragraph(labels["pdf_education"], s_section))
+            story.append(HRFlowable(
+                width="100%", thickness=0.5, color=black,
+                spaceBefore=1 * sf, spaceAfter=4 * sf,
+            ))
+            for edu in education:
+                story.append(row2(
+                    edu.get("institution", ""), s_bold_l,
+                    edu.get("location", ""), s_norm_r,
+                ))
+                story.append(row2(
+                    edu.get("degree", ""), s_ital_l,
+                    edu.get("date", ""), s_ital_r,
+                ))
+                details = edu.get("details", "").strip()
+                if details:
+                    story.append(Paragraph(safe(details), s_detail))
+                story.append(Spacer(1, 6 * sf))
 
-    doc.build(story)
-    buf.seek(0)
-    return buf
+        # ── SKILLS ───────────────────────────────────────────────
+        skills = data.get("skills", [])
+        if skills:
+            story.append(Paragraph(labels["pdf_skills"], s_section))
+            story.append(HRFlowable(
+                width="100%", thickness=0.5, color=black,
+                spaceBefore=1 * sf, spaceAfter=4 * sf,
+            ))
+            for sk in skills:
+                text = sk.get("text", sk) if isinstance(sk, dict) else str(sk)
+                if text.strip():
+                    story.append(bullet_para(text))
+
+        # Compilar y comprobar número de páginas
+        try:
+            doc.build(story)
+            buf.seek(0)
+            pages = PdfReader(buf).get_num_pages()
+            if pages <= 1:
+                buf.seek(0)
+                return buf, True
+            if sf <= 0.76:
+                buf.seek(0)
+                return buf, False
+        except Exception:
+            if sf <= 0.76:
+                buf.seek(0)
+                return buf, False
+

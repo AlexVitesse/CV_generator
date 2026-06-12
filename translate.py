@@ -2,11 +2,20 @@
 Traducción automática de contenido del CV usando Google Translate (gratis).
 """
 
+import copy
+import json
+
+from llm_client import call_ollama, _parse_json_response, get_logger
+from pydantic import ValidationError
+from validation import TranslationResponse
+
 try:
     from deep_translator import GoogleTranslator
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
+
+logger = get_logger("translate")
 
 
 # Mapeo de etiquetas de skills es↔en
@@ -97,16 +106,110 @@ def translate_text(text: str, source: str, target: str) -> str:
             res = translator.translate(text)
             return _fix_capitalization(text, res) if res else text
     except Exception as e:
-        print(f"Error traducción: {e}")
+        logger.exception("translate_text error")
         return text
 
 
+def _restore_ids_with_fallback(data_section: list, trans_section: list, source: str, target: str):
+    """Restaura IDs y traduce items faltantes si el LLM devolvió menos."""
+    if len(trans_section) < len(data_section):
+        logger.warning(
+            "LLM devolvió %d items de %d — traduciendo los %d faltantes con fallback",
+            len(trans_section), len(data_section),
+            len(data_section) - len(trans_section),
+        )
+        for i in range(len(trans_section), len(data_section)):
+            orig = data_section[i]
+            missing = copy.deepcopy(orig)
+            for key in ("company", "title", "bullets", "name", "description",
+                         "institution", "degree", "details", "text", "summary"):
+                if key in missing and isinstance(missing[key], str) and missing[key].strip():
+                    missing[key] = _translate_fallback(missing[key], source, target)
+            trans_section.append(missing)
+
+    for orig, trans in zip(data_section, trans_section):
+        if isinstance(trans, dict) and isinstance(orig, dict):
+            trans["id"] = orig.get("id", trans.get("id"))
+
+
+def _translate_fallback(text: str, source: str, target: str) -> str:
+    """Traduce un texto con deep-translator."""
+    return translate_text(text, source, target)
+
+
+def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, model: str) -> dict:
+    """Traduce la estructura completa del CV usando LLM (Ollama Cloud) en una sola llamada."""
+    cv_clean = copy.deepcopy(data)
+
+    system_prompt = (
+        "You are an expert professional translator specializing in IT, Software Engineering, and ATS optimization.\n"
+        f"Translate the following CV JSON schema from '{source}' to '{target}'.\n"
+        "RULES:\n"
+        "1. Translate all text values of fields such as: 'summary', 'company', 'title', 'bullets', 'name', 'description', 'institution', 'degree', 'details', 'location'.\n"
+        "2. Keep all JSON keys, IDs (like 'id'), URLs, phone numbers, and structural schema exactly the same.\n"
+        "3. Preserve technical jargon appropriately: do not translate standard tech terms literally (e.g., keep 'FastAPI', 'RAG', 'machine learning', 'data pipelines' as standard professional terms in the target language).\n"
+        "4. Return ONLY valid raw JSON representing the translated CV. Do not wrap it in markdown code blocks like ```json or add any explanation text."
+    )
+
+    user_prompt = json.dumps(cv_clean, ensure_ascii=False)
+
+    raw_reply = call_ollama(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        model=model, api_key=api_key, json_mode=True, timeout=120.0,
+    )
+
+    # Parsing tolerante a fences (antes era json.loads directo → crash si venía texto)
+    translated_json = _parse_json_response(raw_reply)
+
+    # Chequeo suave del shape: solo advierte; la reparación item-a-item de abajo
+    # cubre los faltantes, así que no bloqueamos la traducción.
+    try:
+        TranslationResponse.model_validate(translated_json)
+    except ValidationError as e:
+        logger.warning("translate: shape inesperado del LLM (%d errores)", e.error_count())
+
+    # Restaurar IDs con validación de largos y fallback
+    if "experiences" in data and "experiences" in translated_json:
+        _restore_ids_with_fallback(
+            data["experiences"], translated_json["experiences"], source, target
+        )
+    if "education" in data and "education" in translated_json:
+        _restore_ids_with_fallback(
+            data["education"], translated_json["education"], source, target
+        )
+    if "projects" in data and "projects" in translated_json:
+        _restore_ids_with_fallback(
+            data["projects"], translated_json["projects"], source, target
+        )
+    if "skills" in data and "skills" in translated_json:
+        _restore_ids_with_fallback(
+            data["skills"], translated_json["skills"], source, target
+        )
+
+    return translated_json
+
+
 def translate_cv_data(data: dict, source: str, target: str,
-                      progress_callback=None) -> dict:
-    """Traduce todos los campos de texto del CV."""
-    import copy
+                       progress_callback=None, api_key: str = None, model: str = None) -> dict:
+    """Traduce todos los campos de texto del CV. Usa traducción por IA si api_key está disponible,
+    si no, o si falla, usa deep-translator."""
+    if api_key and model:
+        try:
+            logger.info("Iniciando traducción semántica por IA (Ollama Cloud)")
+            if progress_callback:
+                progress_callback(0.3)
+            result = translate_cv_via_llm(data, source, target, api_key, model)
+            if progress_callback:
+                progress_callback(1.0)
+            return result
+        except Exception as e:
+            logger.warning("Fallo traducción por IA, usando fallback de Google: %s", e)
+
     translated = copy.deepcopy(data)
-    print(f"--- Iniciando traducción de {source} a {target} ---")
+    logger.info("Traducción Google de %s a %s", source, target)
 
     total_steps = 2  # summary + location
     total_steps += len(translated.get("experiences", [])) * 3
@@ -122,7 +225,7 @@ def translate_cv_data(data: dict, source: str, target: str,
             progress_callback(current_step / max(total_steps, 1))
 
         result = translate_text(text, src, tgt)
-        print(f"[{field_name}] ({len(text)} chars) -> {result[:30]}...")
+        logger.debug("[%s] (%d chars) -> %s...", field_name, len(text), result[:30])
         return result
 
     # ── Resumen y Ubicación ──────────────────────────────────
@@ -159,8 +262,8 @@ def translate_cv_data(data: dict, source: str, target: str,
     # ── Skills ───────────────────────────────────────────────
     for i, sk in enumerate(translated.get("skills", [])):
         sk["text"] = step(f"skill_{i}", sk.get("text", ""), source, target)
-        # Reemplazo determinístico de etiquetas de skills (Google Translate las mangla)
         sk["text"] = _fix_skill_labels(sk["text"], target)
 
-    print("--- Traducción finalizada ---")
+    logger.info("Traducción finalizada")
     return translated
+

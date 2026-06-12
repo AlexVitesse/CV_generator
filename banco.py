@@ -6,9 +6,18 @@ del candidato. Permite activar/desactivar items por vacante sin perder datos.
 """
 
 import json
+import logging
 import os
+import shutil
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger("banco")
+_load_warning: str = ""  # populated by load_banco on corruption
+
+
+def get_load_warning() -> str:
+    return _load_warning
 
 
 BANCO_FILENAME = "banco_personal.json"
@@ -22,26 +31,66 @@ def generate_bank_id(prefix: str = "item") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+def _split_bullets(bullets_text: str) -> list[str]:
+    """Divide el string de bullets del CV en líneas no vacías."""
+    return [b.strip() for b in (bullets_text or "").split("\n") if b.strip()]
+
+
 # ═══════════════════════════════════════════════════════════════
 # FILE I/O
 # ═══════════════════════════════════════════════════════════════
 
 def load_banco() -> dict:
-    """Carga banco_personal.json. Retorna dict vacío si no existe."""
+    """Carga banco_personal.json. Retorna dict vacío si no existe.
+    Si el archivo está corrupto, intenta recuperar desde el .bak."""
+    global _load_warning
     path = _banco_path()
     if not os.path.exists(path):
         return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        bak_path = path + ".bak"
+        if os.path.exists(bak_path):
+            try:
+                with open(bak_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                _load_warning = "banco_personal.json estaba corrupto. Se recuperó la copia de seguridad (.bak)."
+                logger.warning("banco corrupto, recuperado de .bak")
+                return data
+            except (json.JSONDecodeError, IOError):
+                pass
+        _load_warning = "banco_personal.json está corrupto y no se pudo recuperar. Se usará un banco vacío."
+        logger.error("banco corrupto y sin .bak válido")
+        return {}
 
 
 def save_banco(banco: dict) -> None:
-    """Guarda banco a disco con timestamp actualizado."""
+    """Guarda banco a disco con escritura atómica y backup.
+
+    Escribe a un .tmp primero, luego renombra atómicamente,
+    y conserva el archivo previo como .bak.
+    """
     if "_meta" not in banco:
         banco["_meta"] = {"version": 1}
     banco["_meta"]["last_modified"] = datetime.now().isoformat(timespec="seconds")
-    with open(_banco_path(), "w", encoding="utf-8") as f:
+
+    path = _banco_path()
+    tmp_path = path + ".tmp"
+    bak_path = path + ".bak"
+
+    # Escribir a .tmp
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(banco, f, ensure_ascii=False, indent=2)
+
+    # Conservar copia de seguridad del archivo previo
+    if os.path.exists(path):
+        shutil.copy2(path, bak_path)
+
+    # Renombrar atómicamente
+    os.replace(tmp_path, path)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -346,30 +395,42 @@ def merge_cv_to_bank(cv: dict, banco: dict) -> None:
     if active_sums and cv.get("summary"):
         active_sums[0]["text"] = cv["summary"]
 
-    # ── Experiences ──
-    active_exps = [e for e in banco.get("experiences", []) if e.get("active", True)]
-    cv_exps = cv.get("experiences", [])
-    for i, bank_exp in enumerate(active_exps):
-        if i >= len(cv_exps):
-            break
-        cv_exp = cv_exps[i]
+    # ── Experiences: emparejar por id (no por posición) ──
+    # El CV solo trae los items activos, pero el banco es el master set: los
+    # items sin match en el CV se conservan; los del CV sin match se agregan.
+    bank_exps_by_id = {e["id"]: e for e in banco.get("experiences", []) if "id" in e}
+    for cv_exp in cv.get("experiences", []):
+        bank_exp = bank_exps_by_id.get(cv_exp.get("id"))
+        cv_bullet_lines = _split_bullets(cv_exp.get("bullets", ""))
+
+        if bank_exp is None:
+            # Experiencia nueva (reordenada/creada en Manual): agregar al banco.
+            banco.setdefault("experiences", []).append({
+                "id": cv_exp.get("id") or generate_bank_id("exp"),
+                "company": cv_exp.get("company", ""),
+                "title": cv_exp.get("title", ""),
+                "location": cv_exp.get("location", ""),
+                "dates": cv_exp.get("dates", ""),
+                "active": True,
+                "bullets": [
+                    {"id": generate_bank_id("bul"), "text": txt, "tags": [], "active": True}
+                    for txt in cv_bullet_lines
+                ],
+            })
+            continue
+
         bank_exp["company"] = cv_exp.get("company", bank_exp["company"])
         bank_exp["title"] = cv_exp.get("title", bank_exp["title"])
         bank_exp["location"] = cv_exp.get("location", bank_exp["location"])
         bank_exp["dates"] = cv_exp.get("dates", bank_exp["dates"])
 
-        # Sincronizar bullets: el CV tiene string, el banco tiene objetos
-        cv_bullet_lines = [
-            b.strip() for b in cv_exp.get("bullets", "").split("\n") if b.strip()
-        ]
+        # Bullets: el CV los aplana a string y pierden su id, así que dentro de
+        # la experiencia (ya emparejada por id) se sincronizan por posición
+        # sobre los bullets activos. Los extra del CV se agregan como nuevos.
         active_bullets = [b for b in bank_exp.get("bullets", []) if b.get("active", True)]
-
-        # Actualizar bullets existentes
         for j, bank_bul in enumerate(active_bullets):
             if j < len(cv_bullet_lines):
                 bank_bul["text"] = cv_bullet_lines[j]
-
-        # Si el CV tiene más bullets que el banco (nuevos del AI), agregarlos
         if len(cv_bullet_lines) > len(active_bullets):
             for new_text in cv_bullet_lines[len(active_bullets):]:
                 bank_exp["bullets"].append({
@@ -379,56 +440,58 @@ def merge_cv_to_bank(cv: dict, banco: dict) -> None:
                     "active": True,
                 })
 
-    # ── Projects ──
-    active_projs = [p for p in banco.get("projects", []) if p.get("active", True)]
-    cv_projs = cv.get("projects", [])
-    for i, bank_proj in enumerate(active_projs):
-        if i >= len(cv_projs):
-            break
-        cv_proj = cv_projs[i]
+    # ── Projects: emparejar por id ──
+    bank_projs_by_id = {p["id"]: p for p in banco.get("projects", []) if "id" in p}
+    for cv_proj in cv.get("projects", []):
+        bank_proj = bank_projs_by_id.get(cv_proj.get("id"))
+        if bank_proj is None:
+            banco.setdefault("projects", []).append({
+                "id": cv_proj.get("id") or generate_bank_id("proj"),
+                "name": cv_proj.get("name", ""),
+                "url": cv_proj.get("url", ""),
+                "description": cv_proj.get("description", ""),
+                "tags": [],
+                "active": True,
+            })
+            continue
         bank_proj["name"] = cv_proj.get("name", bank_proj["name"])
         bank_proj["url"] = cv_proj.get("url", bank_proj["url"])
         bank_proj["description"] = cv_proj.get("description", bank_proj["description"])
 
-    # Si el CV tiene más projects, agregar al banco
-    if len(cv_projs) > len(active_projs):
-        for new_proj in cv_projs[len(active_projs):]:
-            banco["projects"].append({
-                "id": generate_bank_id("proj"),
-                "name": new_proj.get("name", ""),
-                "url": new_proj.get("url", ""),
-                "description": new_proj.get("description", ""),
+    # ── Skills: emparejar por id ──
+    bank_skills_by_id = {s["id"]: s for s in banco.get("skills", []) if "id" in s}
+    for cv_sk in cv.get("skills", []):
+        bank_sk = bank_skills_by_id.get(cv_sk.get("id"))
+        if bank_sk is None:
+            banco.setdefault("skills", []).append({
+                "id": cv_sk.get("id") or generate_bank_id("sk"),
+                "text": cv_sk.get("text", ""),
                 "tags": [],
                 "active": True,
             })
+            continue
+        bank_sk["text"] = cv_sk.get("text", bank_sk["text"])
 
-    # ── Skills ──
-    active_skills = [s for s in banco.get("skills", []) if s.get("active", True)]
-    cv_skills = cv.get("skills", [])
-    for i, bank_sk in enumerate(active_skills):
-        if i < len(cv_skills):
-            bank_sk["text"] = cv_skills[i].get("text", bank_sk["text"])
-
-    if len(cv_skills) > len(active_skills):
-        for new_sk in cv_skills[len(active_skills):]:
-            banco["skills"].append({
-                "id": generate_bank_id("sk"),
-                "text": new_sk.get("text", ""),
-                "tags": [],
+    # ── Education: emparejar por id ──
+    bank_edus_by_id = {e["id"]: e for e in banco.get("education", []) if "id" in e}
+    for cv_edu in cv.get("education", []):
+        bank_edu = bank_edus_by_id.get(cv_edu.get("id"))
+        if bank_edu is None:
+            banco.setdefault("education", []).append({
+                "id": cv_edu.get("id") or generate_bank_id("edu"),
+                "institution": cv_edu.get("institution", ""),
+                "degree": cv_edu.get("degree", ""),
+                "details": cv_edu.get("details", ""),
+                "location": cv_edu.get("location", ""),
+                "date": cv_edu.get("date", ""),
                 "active": True,
             })
-
-    # ── Education ──
-    active_edus = [e for e in banco.get("education", []) if e.get("active", True)]
-    cv_edus = cv.get("education", [])
-    for i, bank_edu in enumerate(active_edus):
-        if i < len(cv_edus):
-            cv_edu = cv_edus[i]
-            bank_edu["institution"] = cv_edu.get("institution", bank_edu["institution"])
-            bank_edu["degree"] = cv_edu.get("degree", bank_edu["degree"])
-            bank_edu["details"] = cv_edu.get("details", bank_edu["details"])
-            bank_edu["location"] = cv_edu.get("location", bank_edu["location"])
-            bank_edu["date"] = cv_edu.get("date", bank_edu["date"])
+            continue
+        bank_edu["institution"] = cv_edu.get("institution", bank_edu["institution"])
+        bank_edu["degree"] = cv_edu.get("degree", bank_edu["degree"])
+        bank_edu["details"] = cv_edu.get("details", bank_edu["details"])
+        bank_edu["location"] = cv_edu.get("location", bank_edu["location"])
+        bank_edu["date"] = cv_edu.get("date", bank_edu["date"])
 
 
 # ═══════════════════════════════════════════════════════════════

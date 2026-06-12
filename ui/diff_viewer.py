@@ -1,0 +1,203 @@
+"""
+Diff Viewer interactivo de sugerencias de la IA.
+"""
+
+import difflib
+import html as _html
+import re
+
+import streamlit as st
+
+from helpers import uid, sync_widgets_to_data
+from i18n import t
+
+
+def _html_word_diff(before: str, after: str) -> str:
+    """Genera un HTML con el diff palabra-por-palabra entre `before` y `after`.
+    Verde = añadido, rojo tachado = eliminado."""
+    before = before or ""
+    after = after or ""
+    a = re.split(r'(\s+)', before)
+    b = re.split(r'(\s+)', after)
+    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+
+    add = "background:#d4f7d4;color:#0a6b0a;border-radius:3px;"
+    rem = "background:#f9d4d4;color:#9b1c1c;text-decoration:line-through;border-radius:3px;"
+    out = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        a_seg = _html.escape("".join(a[i1:i2]))
+        b_seg = _html.escape("".join(b[j1:j2]))
+        if tag == "equal":
+            out.append(b_seg)
+        elif tag == "delete":
+            out.append(f"<span style='{rem}'>{a_seg}</span>")
+        elif tag == "insert":
+            out.append(f"<span style='{add}'>{b_seg}</span>")
+        elif tag == "replace":
+            out.append(f"<span style='{rem}'>{a_seg}</span>")
+            out.append(f"<span style='{add}'>{b_seg}</span>")
+    body = "".join(out).replace("\n", "<br>")
+    return (
+        "<div style='font-size:0.88rem;line-height:1.6;padding:0.6rem 0.8rem;"
+        "border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;'>"
+        f"{body}</div>"
+    )
+
+
+def _collect_suggestion_changes(d: dict, suggestions: dict) -> list:
+    """Construye la lista de cambios sugeridos no triviales (after != before).
+
+    Cada cambio: {key, kind, index, label, before, after}.
+    """
+    changes = []
+
+    def _add(key, kind, index, label, before, after):
+        before = (before or "").strip()
+        after = (after or "").strip()
+        if after and after != before:
+            changes.append({
+                "key": key, "kind": kind, "index": index,
+                "label": label, "before": before, "after": after,
+            })
+
+    # Resumen
+    if suggestions.get("summary"):
+        _add("summary", "summary", None, t("diff_field_summary"),
+             d.get("summary", ""), suggestions["summary"])
+
+    # Experiencias (título + bullets)
+    exps = d.get("experiences", [])
+    for exp_sug in suggestions.get("experiences", []):
+        idx = exp_sug.get("index", 0)
+        cur = exps[idx] if 0 <= idx < len(exps) else {}
+        if exp_sug.get("title"):
+            _add(f"exptitle_{idx}", "exp_title", idx,
+                 t("diff_field_exp_title").format(idx),
+                 cur.get("title", ""), exp_sug["title"])
+        if exp_sug.get("bullets"):
+            _add(f"expbul_{idx}", "exp_bullets", idx,
+                 t("diff_field_exp_bullets").format(idx),
+                 cur.get("bullets", ""), exp_sug["bullets"])
+
+    # Proyectos
+    projs = d.get("projects", [])
+    for proj_sug in suggestions.get("projects", []):
+        idx = proj_sug.get("index", 0)
+        cur = projs[idx] if 0 <= idx < len(projs) else {}
+        if proj_sug.get("description"):
+            _add(f"proj_{idx}", "proj_desc", idx,
+                 t("diff_field_proj").format(idx),
+                 cur.get("description", ""), proj_sug["description"])
+
+    # Skills
+    if suggestions.get("skills"):
+        raw_skills = suggestions["skills"]
+        after = " | ".join(raw_skills) if isinstance(raw_skills, list) else str(raw_skills)
+        before = " | ".join(sk.get("text", "") for sk in d.get("skills", []))
+        _add("skills", "skills", None, t("diff_field_skills"), before, after)
+
+    return changes
+
+
+def _apply_selected_changes(d: dict, changes: list) -> int:
+    """Aplica al CV los cambios cuyo checkbox de inclusión está activo.
+    Devuelve cuántos se aplicaron."""
+    applied = 0
+    exps = d.get("experiences", [])
+    projs = d.get("projects", [])
+
+    for ch in changes:
+        if not st.session_state.get(f"diffinc_{ch['key']}", True):
+            continue
+        value = st.session_state.get(f"diffta_{ch['key']}", ch["after"])
+        kind, idx = ch["kind"], ch["index"]
+
+        if kind == "summary":
+            d["summary"] = value
+            applied += 1
+        elif kind == "exp_title" and 0 <= idx < len(exps):
+            exps[idx]["title"] = value
+            applied += 1
+        elif kind == "exp_bullets" and 0 <= idx < len(exps):
+            exps[idx]["bullets"] = value
+            applied += 1
+        elif kind == "proj_desc" and 0 <= idx < len(projs):
+            projs[idx]["description"] = value
+            applied += 1
+        elif kind == "skills":
+            # Una sola línea de skills; preservar líneas de certs existentes
+            new_skills = [{"id": uid(), "text": value.strip()}]
+            for sk in d.get("skills", []):
+                txt = sk.get("text", "")
+                if ("Cert" in txt or "cert" in txt) and txt.strip() not in value:
+                    new_skills.append(sk)
+            d["skills"] = new_skills
+            applied += 1
+
+    return applied
+
+
+def render_suggestions_diff(d: dict, result: dict):
+    """Diff Viewer: muestra cada sugerencia de la IA con su diff inline y permite
+    aceptar/rechazar y editar individualmente antes de aplicar."""
+    suggestions = result.get("suggestions", {})
+    if not suggestions:
+        return
+
+    changes = _collect_suggestion_changes(d, suggestions)
+    if not changes:
+        return
+
+    st.divider()
+    st.subheader(t("vacancy_suggestions"))
+    st.caption(t("diff_intro"))
+    st.caption(t("diff_legend"))
+
+    # ── Aceptar / rechazar todos ──
+    bc1, bc2, _ = st.columns([2, 2, 6])
+    with bc1:
+        if st.button(t("diff_select_all"), key="diff_all", use_container_width=True):
+            for ch in changes:
+                st.session_state[f"diffinc_{ch['key']}"] = True
+            st.rerun()
+    with bc2:
+        if st.button(t("diff_select_none"), key="diff_none", use_container_width=True):
+            for ch in changes:
+                st.session_state[f"diffinc_{ch['key']}"] = False
+            st.rerun()
+
+    # ── Render por cambio ──
+    for ch in changes:
+        inc_key = f"diffinc_{ch['key']}"
+        ta_key = f"diffta_{ch['key']}"
+        with st.container(border=True):
+            st.checkbox(
+                f"**{ch['label']}** — {t('diff_include')}",
+                value=st.session_state.get(inc_key, True),
+                key=inc_key,
+            )
+            edited = st.text_area(
+                t("diff_suggested"),
+                value=ch["after"],
+                height=140 if ch["kind"] in ("exp_bullets", "summary", "skills") else 70,
+                key=ta_key,
+            )
+            with st.expander(t("diff_view"), expanded=False):
+                st.markdown(
+                    f"**{t('diff_current')}** → **{t('diff_suggested')}**",
+                    help=None,
+                )
+                st.markdown(_html_word_diff(ch["before"], edited), unsafe_allow_html=True)
+
+    # ── Aplicar seleccionados ──
+    if st.button(t("diff_apply_selected"), type="primary", key="diff_apply"):
+        sync_widgets_to_data(d)
+        applied = _apply_selected_changes(d, changes)
+        if applied == 0:
+            st.warning(t("diff_none_selected"))
+        else:
+            st.session_state._needs_widget_push = True
+            st.session_state._needs_reevaluation = True
+            st.session_state.cv_adapted = True
+            st.toast(t("diff_applied_count").format(applied))
+            st.rerun()

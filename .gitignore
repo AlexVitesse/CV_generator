@@ -27,3 +27,12 @@ cv_*.html
 *_analysis.html
 *_evaluation.html
 *_match_analysis.html
+*.html
+
+# Base de datos SQLite local
+*.db
+
+# Configuración de asistentes AI y editores locales
+.continue/
+.agents/
+skills-lock.json
