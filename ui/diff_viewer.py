@@ -125,11 +125,15 @@ def _apply_selected_changes(d: dict, changes: list) -> int:
             projs[idx]["description"] = value
             applied += 1
         elif kind == "skills":
-            # Una sola línea de skills; preservar líneas de certs existentes
+            # La sugerencia es una sola línea de skills TÉCNICAS (formato tech-tier), que no
+            # incluye certificaciones ni la línea de idiomas/soft skills. Preservamos ambas para
+            # no perder evidencia de must-haves (ej: "English proficiency" vive en "Idiomas:").
             new_skills = [{"id": uid(), "text": value.strip()}]
             for sk in d.get("skills", []):
                 txt = sk.get("text", "")
-                if ("Cert" in txt or "cert" in txt) and txt.strip() not in value:
+                low = txt.lower()
+                preserve = "cert" in low or "idioma" in low or "language" in low
+                if preserve and txt.strip() not in value:
                     new_skills.append(sk)
             d["skills"] = new_skills
             applied += 1

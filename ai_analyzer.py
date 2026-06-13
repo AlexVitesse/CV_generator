@@ -64,9 +64,10 @@ def save_ai_config(api_key: str, model: str):
         json.dump({"api_key": saved_key, "model": model}, f)
 
 
-# Temperatura baja para tareas de análisis/JSON: respuestas reproducibles
-# (el mismo CV + vacante debe dar un score similar entre corridas).
-ANALYSIS_OPTIONS = {"temperature": 0.2, "top_p": 0.9}
+# Temperatura 0 + seed fijo para tareas de análisis/JSON (score, eval, selección de banco):
+# el mismo CV + vacante debe dar el MISMO score entre corridas. La generación de texto libre
+# (summary, cover letter) usa CHAT_OPTIONS y mantiene creatividad — no se ve afectada.
+ANALYSIS_OPTIONS = {"temperature": 0, "top_p": 0.9, "seed": 42}
 # Temperatura media para chat y generación de texto libre.
 CHAT_OPTIONS = {"temperature": 0.5}
 

@@ -288,7 +288,7 @@ def get_bank_manifest(banco: dict) -> list[dict]:
     for exp in banco.get("experiences", []):
         manifest.append({
             "id": exp["id"], "type": "experience",
-            "text": f"{exp.get('company', '')} — {exp.get('title', '')}",
+            "text": f"{exp.get('company', '')} — {exp.get('title', '')} ({exp.get('dates', '')})",
             "tags": [],
         })
         for bul in exp.get("bullets", []):

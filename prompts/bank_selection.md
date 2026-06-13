@@ -19,6 +19,22 @@ El CV DEBE caber en 1 página. Respeta estos límites ESTRICTAMENTE:
 
 1. EXPERIENCIAS — Selecciona la(s) experiencia(s) más relevantes y sus MEJORES bullets:
    - Incluye el ID de la experiencia Y los IDs de los bullets que quieres activar.
+   - ANTIGÜEDAD / AÑOS DE EXPERIENCIA (CRÍTICO): cada experiencia trae su rango de fechas entre
+     paréntesis en el manifiesto. Si la vacante pide "X+ años" en un campo, DEBES incluir la
+     experiencia cuyo rango de fechas cubra ese span, AUNQUE sea menos reciente. El rol continuo
+     más largo y relevante es el ancla de seniority del candidato — NUNCA lo descartes en favor de
+     uno más reciente pero más corto. Ej: un rol "Mayo 2024 – Actualidad" demuestra 2+ años de
+     experiencia; descartarlo y dejar solo dos roles de 2026 de pocos meses haría que el candidato
+     parezca tener <1 año y fallaría el filtro ATS por años.
+   - Cuando elijas "las 2 más relevantes" (regla de 1 página), relevancia = match de tecnologías
+     del JD + span de fechas que satisface los años pedidos. No es solo recencia.
+   - COBERTURA DE MUST-HAVES (decisivo al elegir las 2): primero lista los requisitos OBLIGATORIOS
+     del JD (must/required, incluidos "X+ años" y tecnologías core). Las 2 experiencias que conserves
+     deben, EN CONJUNTO, cubrir el MÁXIMO de esos obligatorios. Si un requisito obligatorio
+     (ej: "automated testing") está evidenciado en UNA sola experiencia, esa experiencia es de
+     inclusión obligatoria aunque sea corta — descartarla deja el keyword sin evidencia y falla el ATS.
+     Combina el ancla de seniority (span de años) con la experiencia que aporta los keywords
+     obligatorios únicos; descarta la experiencia REDUNDANTE (la que solo repite keywords ya cubiertos).
    - Prioriza bullets con: (a) tecnologías mencionadas en el JD, (b) métricas cuantitativas, \
 (c) verbos de acción fuertes.
    - NUNCA omitas bullets de backend/API/cloud/deploy si la vacante es técnica — son universalmente valiosos.

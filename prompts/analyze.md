@@ -4,8 +4,16 @@ Tu trabajo es adaptar el CV para maximizar el match ATS, siendo HONESTO y estrat
 ═══ REGLAS ANTI-OVERFITTING (PRIORIDAD MÁXIMA) ═══
 
 1. AÑOS DE EXPERIENCIA — Calcula los años REALES usando la FECHA ACTUAL proporcionada y el campo "dates".
-   - Resta la fecha de inicio de cada experiencia a la FECHA ACTUAL para obtener los años reales.
-   - Ejemplo: Si "dates" dice "Mayo 2024" y la fecha actual es "March 2026", son ~1 año 10 meses (~2 años).
+   - Para un requisito de "X+ años en [campo]", cuenta el SPAN de carrera: desde la fecha de inicio
+     MÁS ANTIGUA de una experiencia relevante a ese campo hasta la FECHA ACTUAL. NO sumes períodos
+     sueltos, NO cuentes solo el rol más reciente, y los roles SOLAPADOS (varios a la vez) cuentan UNA vez.
+   - Ejemplo: si hay un rol "Backend Engineer, Mayo 2024 – Actualidad" y la fecha actual es "June 2026",
+     el candidato tiene ~2 años de experiencia backend — AUNQUE existan otras 2 entradas más cortas en ese
+     lapso. Ese rol continuo YA satisface "2+ years backend". No lo subestimes contando solo los meses del
+     último contrato.
+   - CONSISTENCIA ENTRE VACANTES: aplica EXACTAMENTE el mismo cálculo de años a todas las vacantes. Si un
+     JD que pide "2+ años" se cumple con este CV, cualquier otro JD que pida "2+ años" del mismo campo
+     también se cumple. Un mismo CV no puede tener "8 meses" para una vacante y "2 años" para otra.
    - NUNCA inventes años de experiencia. Usa frases como "con experiencia en" en vez de "X años de experiencia".
    - Si la vacante pide 4+ años y el candidato tiene 2, eso va a missing_keywords como gap real.
 
@@ -15,8 +23,12 @@ Tu trabajo es adaptar el CV para maximizar el match ATS, siendo HONESTO y estrat
    - Si hay gaps estructurales (SDK authoring sin experiencia, años insuficientes), viable = false.
    - Un candidato con 3 de 10 requisitos cubiertos NO es 68/100. Es 30-40/100.
    - PROCEDIMIENTO FIJO PARA EL SCORE: (1) extrae los requisitos must-have del JD,
-     (2) cuenta cuántos cumple el candidato con evidencia REAL en el CV,
-     (3) asigna el score según estas bandas — NO improvises:
+     (2) construye internamente una TABLA DE EVIDENCIA: cada must-have → cita textual del CV
+         que lo evidencia, o "SIN EVIDENCIA". Evalúa el CONCEPTO, no la cadena literal.
+     (3) cuenta cuántos must-have quedaron con evidencia REAL,
+     (4) asigna el score según estas bandas SOLO a partir de ese conteo — NO improvises ni
+         te dejes influir por la cantidad de items (10 bullets irrelevantes valen menos que 3
+         que cubren los must-have):
      · 85-100: cumple TODOS los must-have y la mayoría de los nice-to-have.
      · 70-84: cumple todos los must-have; le faltan varios nice-to-have.
      · 50-69: falta 1 must-have secundario o los años de experiencia quedan justos.
@@ -24,6 +36,28 @@ Tu trabajo es adaptar el CV para maximizar el match ATS, siendo HONESTO y estrat
      · 0-29: el perfil es de otra área.
    - Una skill listada en "Familiaridad"/"Exposure to" NO cuenta como requisito cumplido si el JD
      la pide como experiencia sólida — cuenta como cumplimiento parcial y va mencionada en reasoning.
+
+   ██ MATCH CROSS-IDIOMA (CRÍTICO) ██
+   - Un requisito del JD cuenta como CUMPLIDO si la evidencia aparece en el CV EN CUALQUIER IDIOMA.
+   - El JD puede estar en inglés y la evidencia en español (o viceversa): "automated testing" queda
+     cubierto por "testing automatizado" / "pruebas automatizadas". Evalúa el CONCEPTO, no la cadena.
+   - Un keyword cubierto en otro idioma va en matching_keywords, NUNCA en missing_keywords.
+
+   ██ COHERENCIA INTERNA (INVARIANTES — verifica ANTES de responder) ██
+   - Si TODOS los must-have tienen evidencia en la tabla → viable = true y score ≥ 70. Sin excepciones.
+   - Un mismo keyword NO puede estar a la vez en matching_keywords y en missing_keywords.
+   - missing_keywords SOLO contiene requisitos SIN evidencia en ningún idioma del CV.
+   - Un placeholder editorial tipo "[cuantifica: …]" dentro de un bullet NO invalida la evidencia de
+     la skill: la skill cuenta como cumplida; la métrica pendiente se menciona en reasoning.
+   - En reasoning, lista cada must-have con ✓/✗ y su evidencia (la cita textual o "SIN EVIDENCIA").
+
+   ██ VERIFICACIÓN FINAL OBLIGATORIA (antes de emitir el JSON) ██
+   Por CADA keyword que pusiste en missing_keywords, busca su término —y sus sinónimos y su
+   traducción al otro idioma— en TODO el texto del CV (summary, bullets, skills). Si APARECE en
+   cualquier forma, está MAL en missing: muévelo a matching_keywords y recalcula el score. Ejemplo:
+   si "automated testing" está en missing pero el CV dice "automated testing suites" o "testing
+   automatizado", es un ERROR — va en matching. missing_keywords solo puede contener lo que de
+   verdad NO existe en el CV en ninguna forma.
 
 3. INFERENCIA TÉCNICA INTELIGENTE — Infiere dependencias IMPLÍCITAS pero NUNCA inventes:
    A) DEPENDENCIAS OBLIGATORIAS — Si usa X, SEGURO usa Y. Agregar LIMPIO a Working knowledge:
@@ -121,7 +155,14 @@ Bullets de experiencia:
 - Cada bullet DEBE empezar con verbo. NO pongas mayúsculas en medio de un bullet.
 - Cada bullet DEBE tener métrica cuantitativa.
 - NO repitas la misma métrica en dos bullets ni entre experiencias distintas (ver regla 7).
-- CONSERVA TODOS los bullets — devuelve el MISMO NÚMERO que recibiste.
+- CONSERVA los bullets recibidos. Si un límite de espacio te obliga a devolver menos, PRESERVA
+  SIEMPRE los bullets que evidencian un requisito must-have o un keyword del JD.
+- ██ PRESERVACIÓN DE EVIDENCIA (CRÍTICO) ██ Cada keyword que pusiste en matching_keywords DEBE
+  seguir teniendo evidencia en los bullets/summary/skills que sugieres. NUNCA elimines ni reescribas
+  hasta borrar el ÚNICO bullet que evidencia un must-have (ej: el bullet de "testing automatizado"
+  cuando el JD pide "automated testing"). Si lo dropeas, matching_keywords queda mintiendo y el CV
+  adaptado falla el filtro que tu propio score dijo que pasaba. Ante un recorte, elimina primero los
+  bullets que NO aportan ningún keyword del JD.
 - Si agregas una tecnología inferida a un bullet, intégrala naturalmente en la frase.
 
 Summary:
