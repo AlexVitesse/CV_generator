@@ -260,14 +260,15 @@ def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
         return suggested
 
     ranks_present = {rank for _, rank, _ in sugg}
+    lowest = max(ranks_present)  # rank más alto = tier más bajo (familiaridad/exposure)
     buckets = {rank: [] for rank in ranks_present}
     for _label, rank, skills in sugg:
         for sk in skills:
             known = orig_rank.get(sk.lower())
             if known is not None and known > rank and known in ranks_present:
                 target = known  # estaba en un tier inferior: regresarla ahí
-            elif known is None and rank == 0 and 1 in ranks_present:
-                target = 1  # skill nueva inferida: nunca en avanzado
+            elif known is None and rank < lowest:
+                target = lowest  # skill nueva inferida → siempre al tier más bajo
             else:
                 target = rank
             buckets[target].append(sk)
@@ -284,9 +285,63 @@ def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
     return " | ".join(parts)
 
 
+def _norm_kw(s: str) -> str:
+    """Normaliza una skill/keyword para comparar: 'Next.js (solid experience)' → 'nextjs'.
+    Conserva + y # para C++/C#."""
+    return re.sub(r"[^a-z0-9+#]", "", str(s or "").split("(")[0].lower())
+
+
+def _demote_missing_keyword_skills(suggested: str, missing_keywords: list) -> str:
+    """Baja al tier más bajo cualquier skill que la IA listó por encima de 'exposure'
+    pese a estar en missing_keywords (contradicción interna detectada en logs: el JD
+    marca Next.js como faltante y a la vez aparece en 'working knowledge')."""
+    sugg = _parse_skill_tiers(suggested)
+    if not sugg or not missing_keywords:
+        return suggested
+    missing = {_norm_kw(k) for k in missing_keywords if _norm_kw(k)}
+    if not missing:
+        return suggested
+
+    ranks_present = {rank for _, rank, _ in sugg}
+    lowest = max(ranks_present)
+    buckets = {rank: [] for rank in ranks_present}
+    for _label, rank, skills in sugg:
+        for sk in skills:
+            target = lowest if (rank < lowest and _norm_kw(sk) in missing) else rank
+            buckets[target].append(sk)
+
+    parts = []
+    for label, rank, _ in sugg:
+        seen, items = set(), []
+        for sk in buckets[rank]:
+            if sk.lower() not in seen:
+                seen.add(sk.lower())
+                items.append(sk)
+        if items:
+            parts.append(f"{label}: {', '.join(items)}")
+    return " | ".join(parts)
+
+
+# Umbrales de viabilidad alineados con las bandas de prompts/analyze.md:
+# score >= 70 con must-haves cubiertos → viable; 30-49 → no viable.
+VIABLE_SCORE_HIGH = 70  # >= esto: el prompt exige viable=true
+VIABLE_SCORE_LOW = 50   # < esto: el prompt exige viable=false
+
+
 def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
     """Limpia problemas comunes de la respuesta de la IA antes de mostrarla."""
     suggestions = result.get("suggestions", {})
+
+    # ── Reconciliar viable con el score (anti-contradicción) ──
+    # El modelo a veces se contradice con sus propias bandas (visto en logs: 78→viable
+    # False y 60→viable True). Forzamos coherencia en los extremos y respetamos su
+    # juicio solo en la banda media 50-69, donde la viabilidad es genuinamente ambigua.
+    score = result.get("match_score")
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        if score >= VIABLE_SCORE_HIGH:
+            result["viable"] = True
+        elif score < VIABLE_SCORE_LOW:
+            result["viable"] = False
 
     # ── Fix summary: palabras pegadas (e.g. "EngineerBackend") ──
     if suggestions.get("summary"):
@@ -310,15 +365,19 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
             suggestions["skills"] = [
                 _strip_parenthetical_notes(s) for s in suggestions["skills"]
             ]
-            # Anti-inflación: regresar skills promovidas a su tier original
-            if cv_data:
-                original_lines = [
-                    sk.get("text", "") for sk in cv_data.get("skills", [])
-                ]
-                suggestions["skills"] = [
-                    _enforce_skill_tiers(s, original_lines)
-                    for s in suggestions["skills"]
-                ]
+            original_lines = (
+                [sk.get("text", "") for sk in cv_data.get("skills", [])] if cv_data else []
+            )
+            missing_kw = result.get("missing_keywords", [])
+            fixed = []
+            for s in suggestions["skills"]:
+                # Anti-inflación: regresar skills promovidas a su tier original
+                if original_lines:
+                    s = _enforce_skill_tiers(s, original_lines)
+                # Anti-contradicción: skill en missing_keywords no puede ir sobre 'exposure'
+                s = _demote_missing_keyword_skills(s, missing_kw)
+                fixed.append(s)
+            suggestions["skills"] = fixed
 
     return result
 

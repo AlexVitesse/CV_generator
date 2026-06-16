@@ -71,6 +71,7 @@ def render_analysis_tab(d: dict):
                             manifest, vacancy_text,
                             st.session_state[sk.AI_API_KEY],
                             st.session_state[sk.AI_MODEL],
+                            protected_keywords=result.get("matching_keywords", []),
                         )
                         apply_ai_selection(banco, selected_ids)
                         save_banco(banco)

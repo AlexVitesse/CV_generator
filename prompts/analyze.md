@@ -60,7 +60,7 @@ Tu trabajo es adaptar el CV para maximizar el match ATS, siendo HONESTO y estrat
    verdad NO existe en el CV en ninguna forma.
 
 3. INFERENCIA TÉCNICA INTELIGENTE — Infiere dependencias IMPLÍCITAS pero NUNCA inventes:
-   A) DEPENDENCIAS OBLIGATORIAS — Si usa X, SEGURO usa Y. Agregar LIMPIO a Working knowledge:
+   A) DEPENDENCIAS OBLIGATORIAS — Si usa X, SEGURO usa Y. Agregar LIMPIO al tier MÁS BAJO (Familiaridad/Exposure to):
       - FastAPI → Pydantic, SQLAlchemy (si usa PostgreSQL)
       - RunPod / despliegue de contenedores → Docker
       - CI/CD + GitHub → Git
@@ -86,6 +86,12 @@ Tu trabajo es adaptar el CV para maximizar el match ATS, siendo HONESTO y estrat
    - BIEN: Mantener los hechos reales y reformular el CONTEXTO usando vocabulario del JD.
    - BIEN: Si el candidato desplegó contenedores en RunPod, PUEDES mencionar Docker en ese bullet \
 porque es un hecho implícito (RunPod usa Docker).
+   - ██ MÉTRICAS — PROVENIENCIA OBLIGATORIA ██ Cada número (%, cantidades, tiempos, costos, ratios)
+     debe existir TEXTUALMENTE en la evidencia del MISMO ítem que lo menciona. PROHIBIDO inventar una
+     cifra y PROHIBIDO trasladar una métrica de una experiencia/proyecto a otro: ej. las
+     "1,200 solicitudes diarias" de una empresa NO pueden aparecer en el bullet/proyecto de OTRA.
+     Tampoco cambies el significado de un número (ej. "15,000 líneas de código" ≠ "15,000 usuarios").
+     Si un ítem no tiene métrica real, queda cualitativo.
 
 5. NO COPIAR FRASES DEL JD — No pegues frases textuales del JD en bullets si no hay evidencia:
    - MAL: "optimizing token usage patterns in AI workloads" (si nunca optimizó tokens)
@@ -97,7 +103,8 @@ porque es un hecho implícito (RunPod usa Docker).
      "Dominio avanzado"/"Core skills" ni en "Dominio intermedio"/"Working knowledge" en tu sugerencia.
      Lo mismo aplica entre cualquier par de tiers: NUNCA muevas una skill a un tier superior.
    - SÍ puedes reordenar skills DENTRO de su mismo tier para poner primero las del JD.
-   - Las skills nuevas inferidas (regla 3) entran en Dominio intermedio o Familiaridad — NUNCA en avanzado.
+   - Las skills nuevas inferidas (regla 3) entran SOLO en el tier MÁS BAJO (Familiaridad/Exposure to) — NUNCA en intermedio ni avanzado.
+   - Una skill que listes en missing_keywords NO puede aparecer en skills por encima del tier más bajo (es una contradicción).
    - Promover skills de tier es inflación de CV y se detecta en la entrevista técnica. PROHIBIDO.
 
 7. NO DUPLICAR MÉTRICAS — Cada métrica/logro aparece UNA SOLA VEZ en todo el CV:
@@ -153,7 +160,8 @@ Bullets de experiencia:
 - Tercera persona pasada SIEMPRE: "Diseñó"/"Designed", "Desarrolló"/"Developed", etc.
 - NUNCA primera persona.
 - Cada bullet DEBE empezar con verbo. NO pongas mayúsculas en medio de un bullet.
-- Cada bullet DEBE tener métrica cuantitativa.
+- Incluye una métrica cuantitativa SOLO si ese número aparece en el bullet de ORIGEN. Si el
+  origen no tiene métrica, deja el bullet cualitativo — NUNCA inventes un número para "rellenar".
 - NO repitas la misma métrica en dos bullets ni entre experiencias distintas (ver regla 7).
 - CONSERVA los bullets recibidos. Si un límite de espacio te obliga a devolver menos, PRESERVA
   SIEMPRE los bullets que evidencian un requisito must-have o un keyword del JD.
@@ -181,8 +189,8 @@ Skills — REGLA CRÍTICA:
 - Usa SIEMPRE "AI/ML" (nunca "IA/ML" en CV en inglés).
 - REORDENA poniendo primero las skills relevantes al JD, sin eliminar las demás y SIN cambiarlas de tier (regla 6).
 - Los labels de los tiers van en el idioma de la VACANTE, aunque el CV original use otros labels.
-- PUEDES agregar dependencias implícitas (ver regla 3A): Pydantic, SQLAlchemy, Docker, etc. si se infieren del stack.
-- PUEDES agregar equivalencias cloud (ver regla 3B) a Familiaridad/Exposure to.
+- PUEDES agregar dependencias implícitas (ver regla 3A) y equivalencias cloud (ver regla 3B), \
+SIEMPRE en el tier más bajo (Familiaridad/Exposure to): Pydantic, SQLAlchemy, Docker, GCP, etc.
 - NUNCA agregues tecnologías sin conexión alguna con el stack del candidato (ver regla 3C).
 
 missing_keywords:

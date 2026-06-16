@@ -23,6 +23,7 @@ from validation import (
     DetailedEvalResponse,
     BankSelectionResponse,
 )
+from metrics_guard import find_fabricated_metrics
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -118,6 +119,72 @@ def _call_validated(
                 "La IA devolvió una respuesta con formato inesperado. "
                 "Intenta de nuevo o revisa el modelo seleccionado."
             ) from second_err
+
+
+_KIND_LABEL = {
+    "experience": "experiencia",
+    "project": "proyecto",
+    "summary": "summary",
+}
+
+
+def _repair_metrics_once(
+    base_messages: list,
+    parsed: dict,
+    cv_data: dict,
+    *,
+    model: str,
+    api_key: str,
+    request_id: str,
+) -> tuple[dict, list]:
+    """Auto-repara métricas inventadas/trasplantadas (bug #1).
+
+    Detecta números en las sugerencias sin respaldo en su ítem de origen y, si
+    los hay, pide al modelo UNA corrección dirigida (mismo patrón de reintento
+    que `_call_validated`). Si la corrección no valida o no mejora, conserva el
+    resultado original. Devuelve (parsed_final, offenders_detectados_iniciales).
+    """
+    offenders = find_fabricated_metrics(parsed.get("suggestions", {}), cv_data)
+    if not offenders:
+        return parsed, []
+
+    lines = []
+    for o in offenders:
+        loc = _KIND_LABEL.get(o["kind"], o["kind"])
+        title = o.get("title") or ""
+        where = f"{loc} «{title}»" if title and o["kind"] != "summary" else loc
+        lines.append(f"- En {where}: el número «{o['metric']}» NO existe en la "
+                     f"evidencia original de ESE ítem. Fragmento: \"{o['snippet']}\"")
+
+    repair_msg = (
+        "REVISIÓN ANTI-FABRICACIÓN DE MÉTRICAS. Las siguientes cifras que incluiste "
+        "no tienen respaldo en el ítem de origen del CV (están inventadas o "
+        "trasplantadas desde otra experiencia/proyecto):\n"
+        + "\n".join(lines)
+        + "\n\nCorrige SOLO esos casos: elimina el número o sustitúyelo por uno que "
+        "aparezca TEXTUALMENTE en la evidencia original de ESE MISMO ítem. Si el ítem "
+        "no tiene una métrica real, deja el bullet/descripción en forma cualitativa, sin "
+        "número. No inventes ni muevas cifras entre ítems. No modifiques nada más. "
+        "Devuelve el JSON COMPLETO corregido, con el mismo esquema."
+    )
+
+    retry_messages = base_messages + [
+        {"role": "assistant", "content": json.dumps(parsed, ensure_ascii=False)},
+        {"role": "user", "content": repair_msg},
+    ]
+    logger.info("METRIC_REPAIR [%s] %d métrica(s) sin respaldo, reparando", request_id, len(offenders))
+    try:
+        raw2 = call_ollama(retry_messages, model=model, api_key=api_key, json_mode=True,
+                           options=ANALYSIS_OPTIONS, request_id=request_id, timeout=180.0)
+        parsed2 = _parse_json_response(raw2)
+        VacancyAnalysisResponse.model_validate(parsed2)
+    except (LLMError, ValidationError, ValueError) as err:
+        logger.warning("METRIC_REPAIR [%s] reparación falló (%s), se conserva original", request_id, err)
+        return parsed, offenders
+
+    remaining = find_fabricated_metrics(parsed2.get("suggestions", {}), cv_data)
+    logger.info("METRIC_REPAIR [%s] offenders %d → %d tras reparar", request_id, len(offenders), len(remaining))
+    return parsed2, offenders
 
 
 def _load_prompt(filename: str, fallback_content: str) -> str:
@@ -219,6 +286,11 @@ def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str, 
     parsed = _call_validated(
         messages, model=model, api_key=api_key, options=ANALYSIS_OPTIONS,
         response_model=VacancyAnalysisResponse, request_id=request_id,
+    )
+
+    # Auto-reparación anti-fabricación de métricas (bug #1)
+    parsed, _metric_offenders = _repair_metrics_once(
+        messages, parsed, cv_data, model=model, api_key=api_key, request_id=request_id,
     )
 
     if _CV_DEBUG:
@@ -508,11 +580,16 @@ Responde con JSON: {{"selected_ids": ["id1", "id2", ...], "reasoning": "..."}}""
 
 
 def select_from_bank(
-    manifest: list[dict], vacancy_text: str, api_key: str, model: str
+    manifest: list[dict], vacancy_text: str, api_key: str, model: str,
+    protected_keywords: list[str] | None = None,
 ) -> list[str]:
     """Pide a la IA que seleccione qué items del banco activar para una vacante.
 
     Retorna lista de IDs seleccionados.
+
+    `protected_keywords`: keywords que el análisis con el banco COMPLETO ya detectó
+    como match. Se le exige al modelo no descartar la única evidencia de ninguno, para
+    que la selección de 1 página no tire abajo el score (ver helpers.deferred_translate_and_reevaluate).
     """
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
@@ -523,6 +600,19 @@ def select_from_bank(
     user_prompt = BANK_SELECTION_USER_TEMPLATE.format(
         vacancy_text=vacancy_text, manifest_json=manifest_json
     )
+    if protected_keywords:
+        kw_list = ", ".join(k for k in protected_keywords if k)
+        if kw_list:
+            user_prompt += (
+                "\n\nKEYWORDS YA DEMOSTRADOS EN EL CV COMPLETO "
+                "(el análisis previo los detectó como match con la vacante):\n"
+                f"{kw_list}\n"
+                "REGLA CRÍTICA: para CADA keyword de esta lista, incluye al menos un item del banco "
+                "que lo evidencie. NO descartes la única evidencia de un keyword ya matcheado solo por "
+                "ahorrar espacio — perder esa evidencia baja el match score tras adaptar. Prioriza "
+                "cubrir todos estos keywords sobre incluir items redundantes. Solo si hay conflicto real "
+                "de espacio (1 página estricta), conserva primero los keywords que sean must-have de la vacante."
+            )
 
     request_id = uuid.uuid4().hex[:8]
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
