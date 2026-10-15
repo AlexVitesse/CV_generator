@@ -448,7 +448,7 @@ def test_list_bullets_are_joined():
 
 
 def test_reintegrated_experience_still_dedups_project(monkeypatch):
-    # Caso Mirai: la reintegración re-agrega la EXPERIENCIA ZAPI; el proyecto ZAPI que
+    # Caso real: la reintegración re-agrega la EXPERIENCIA ZAPI; el proyecto ZAPI que
     # eligió el modelo debe caer (antes salían los dos).
     import ai_analyzer
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
@@ -515,7 +515,7 @@ def test_demoted_skill_returns_to_original_tier():
 
 
 def test_title_not_applied_to_other_company():
-    # Caso Blacksmith: sugerencia con id de ZAPI (no seleccionada) resuelta por contenido
+    # Caso real: sugerencia con id de ZAPI (no seleccionada) resuelta por contenido
     # hacia Condor → no debe ponerle a Condor el título de ZAPI.
     from ui.diff_viewer import _collect_suggestion_changes
     d = {"experiences": [{"id": "exp_condor", "title": "Python Backend Engineer",
@@ -554,7 +554,7 @@ def test_thin_reintegrated_experience_gets_second_bullet():
 
 
 def test_pad_skips_twin_bullet_with_same_text():
-    # QAD: el banco tenía bul_ai_dev_tools con el MISMO texto que bul_de51254e y ZAPI salió
+    # Caso real: el banco tenía bul_ai_dev_tools con el MISMO texto que bul_de51254e y ZAPI salió
     # con la línea de Docker repetida.
     from ai_analyzer import _pad_thin_experiences
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI"},

@@ -85,7 +85,7 @@ def test_fits_flag_matches_page_count():
     assert scale < 1.0  # un CV enorme obligó a encoger: el caller debe poder avisarlo
 
 
-# ── Revisión CV BairesDev (14-oct-2026) ──
+# ── Revisión de un CV real (14-oct-2026) ──
 
 from pdf import detect_content_lang
 
