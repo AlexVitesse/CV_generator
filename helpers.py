@@ -280,9 +280,18 @@ def _parse_skill_tiers(line: str):
     return parsed
 
 
-def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
+def _evidenced(skill: str, evidence: str) -> bool:
+    """¿Todos los tokens de la skill aparecen en el texto de evidencia (minúsculas)?
+    "REST APIs" ← "RESTful APIs", "OpenAI API" ← línea "AI/ML: … OpenAI API …"."""
+    toks = [t for t in re.findall(r"[a-z0-9+#]+", skill.lower()) if len(t) >= 2]
+    return bool(toks) and all(t in evidence for t in toks)
+
+
+def _enforce_skill_tiers(suggested: str, original_lines: list, evidence: str = "") -> str:
     """Devuelve cada skill a su tier original si la IA la promovió o degradó de nivel.
-    Las skills nuevas (inferidas) nunca pueden quedar en el tier avanzado."""
+    Las skills sin tier en el CV van al tier más bajo, salvo que el CV las evidencie
+    (bullets o líneas de skills sin tier como "AI/ML: …"): esas quedan en el intermedio.
+    Nunca entran al tier avanzado."""
     orig_rank = {}
     for line in original_lines:
         for _label, rank, skills in _parse_skill_tiers(line) or []:
@@ -306,6 +315,10 @@ def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
                 # degradar (visto: FastAPI de "Dominio avanzado" bajada a Working knowledge).
                 # Si es un missing_keyword, _demote_missing_keyword_skills la baja después.
                 target = known
+            elif known is None and 1 in ranks_present and _evidenced(sk, evidence):
+                # Real pero sin nivel en el banco (visto: "RAG Pipelines" y "Tool Calling"
+                # en Exposure con un bullet de RAG al 92% y un agente con 18 tools).
+                target = 1
             elif known is None and rank < lowest:
                 target = lowest  # skill nueva inferida → siempre al tier más bajo
             else:
@@ -541,7 +554,13 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
             if tier_lines:
                 combined = " | ".join(tier_lines)
                 if original_lines:
-                    combined = _enforce_skill_tiers(combined, original_lines)
+                    cv = cv_data or {}
+                    evidence = " ".join(
+                        [str(cv.get("summary", ""))] + original_lines
+                        + [str(e.get("bullets", "")) for e in cv.get("experiences", [])]
+                        + [str(p.get("description", "")) for p in cv.get("projects", [])]
+                    ).lower()
+                    combined = _enforce_skill_tiers(combined, original_lines, evidence)
                     combined = _restore_core_skills(combined, original_lines)
                 combined = _demote_missing_keyword_skills(combined, missing_kw)
                 # Re-separar: una línea por tier (escaneable, como pide el prompt).

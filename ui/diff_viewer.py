@@ -95,7 +95,11 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> tuple[list, list]
             dropped.append(exp_sug.get("title") or exp_sug.get("id") or "?")
             continue
         cur = exps[idx]
-        if exp_sug.get("title"):
+        # Título solo si la sugerencia es DE esta experiencia (mismo id). Resuelta por
+        # contenido/índice podía ser de otra empresa: Condor recibió "AI Engineer – Founder"
+        # (el título real de ZAPI, que no estaba en el CV seleccionado).
+        same_item = not exp_sug.get("id") or exp_sug.get("id") == cur.get("id")
+        if exp_sug.get("title") and same_item:
             _add(f"exptitle_{idx}", "exp_title", idx,
                  t("diff_field_exp_title").format(idx),
                  cur.get("title", ""), exp_sug["title"])

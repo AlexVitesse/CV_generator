@@ -138,7 +138,7 @@ de proveedor carga la lista correcta y preserva el modelo guardado.
 
 ## 4. Paridad: que la app genere el CV como uno hecho a mano (2026-10-14, tarde)
 
-Contexto: se adaptaron a mano dos CVs (BairesDev, Mirai) eligiendo bullets del banco **tal
+Contexto: se adaptaron a mano dos CVs para vacantes reales eligiendo bullets del banco **tal
 cual** y solo traduciéndolos/recortándolos. Se comparó contra lo que generaba la app con la
 misma vacante (simulación sin Streamlit del flujo analizar → seleccionar banco → aplicar → PDF,
 sin guardar el banco) y se cerraron las diferencias. Suite: **127 tests en verde**.
@@ -170,3 +170,12 @@ sin guardar el banco) y se cerraron las diferencias. Suite: **127 tests en verde
   banco ahorra una llamada por CV.
 - Skills adyacentes del JD (Snowflake, Tableau, a veces dominios como "Financial Regulations")
   entran en "Exposure to" por la regla del usuario; revisar antes de enviar.
+
+## 5. Fixes tras probar con vacantes reales (15-oct-2026)
+
+| # | Problema | Fix | Dónde |
+|---|----------|-----|-------|
+| 1 | Condor recibió "AI Engineer – Founder" (el título de ZAPI) | El título sugerido solo se aplica si su `id` coincide con el ítem resuelto | `ui/diff_viewer._collect_suggestion_changes` |
+| 2 | Skill sin tier pero evidenciada en el CV caía en "Exposure" | `_evidenced`: con evidencia va a Working (nunca a Core); sin ella, al tier más bajo | `helpers._enforce_skill_tiers` |
+| 3 | Experiencia reintegrada con 1 solo bullet (ZAPI) | `_pad_thin_experiences`: suma su bullet que cubre más keywords protegidos (si cubre ≥1) | `ai_analyzer.select_from_bank` |
+| 4 | ZAPI salió con la misma línea dos veces | El refuerzo salta bullets con texto idéntico a uno ya elegido; se borraron del banco los gemelos `bul_ai_dev_tools`, `bul_d5b606d3`, `bul_72b43b80`, `bul_74785dc0` (respaldo `banco_personal.json.bak5`) | `ai_analyzer._pad_thin_experiences` |

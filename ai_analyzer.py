@@ -814,6 +814,35 @@ def _drop_projects_duplicating_experience(manifest: list[dict], selected_ids: li
     return out
 
 
+def _pad_thin_experiences(manifest: list[dict], selected_ids: list[str],
+                          protected_keywords: list[str] | None) -> list[str]:
+    """Una experiencia con <2 bullets se ve débil en la página. Pasa cuando la
+    reintegración trae una experiencia no elegida solo por UN bullet de evidencia (visto
+    2 veces con ZAPI: quedó con el bullet de webhooks y sin sus agentes ni Gemini Vision).
+    Le suma su bullet no seleccionado que cubre más keywords protegidos (si cubre ≥1).
+    """
+    kws = [(k or "").strip().lower() for k in protected_keywords or [] if (k or "").strip()]
+    selected = set(selected_ids)
+    added = []
+    for exp_id in [i for i in selected_ids if any(
+            it.get("id") == i and it.get("type") == "experience" for it in manifest)]:
+        bullets = [it for it in manifest if it.get("type") == "bullet" and it.get("parent") == exp_id]
+        if sum(b["id"] in selected for b in bullets) >= 2:
+            continue
+        # El banco tiene bullets gemelos (mismo texto, otro id): sumar uno repetiría la línea.
+        have = {b.get("text", "").strip().lower() for b in bullets if b["id"] in selected}
+        scored = [(sum(_covers(k, _item_evidence_text(b)) for k in kws), b["id"])
+                  for b in bullets if b["id"] not in selected
+                  and b.get("text", "").strip().lower() not in have]
+        best = max(scored, default=(0, None), key=lambda s: s[0])
+        if best[0] > 0:
+            selected.add(best[1])
+            added.append(best[1])
+    if added:
+        logger.info("BANK_SELECT experiencia con 1 bullet reforzada: %s", added)
+    return list(selected_ids) + added
+
+
 BANK_SELECTION_USER_TEMPLATE = """\
 VACANTE:
 {vacancy_text}
@@ -892,6 +921,7 @@ def select_from_bank(
     selected_ids = _reintegrate_lost_evidence(manifest, selected_ids, protected_keywords)
     selected_ids = _drop_projects_duplicating_experience(
         manifest, selected_ids, keep=frozenset(selected_ids) - before)
+    selected_ids = _pad_thin_experiences(manifest, selected_ids, protected_keywords)
 
     logger.info("BANK_SELECT [%s] ids=%d reasoning=%.200s", request_id, len(selected_ids), reasoning or "")
 

@@ -512,3 +512,54 @@ def test_demoted_skill_returns_to_original_tier():
         "Core skills: Python", "Working knowledge: FastAPI", "Exposure to: Bash"]}}
     lines = sanitize_ai_result(result, cv)["suggestions"]["skills"]
     assert "FastAPI" in next(l for l in lines if l.startswith("Core skills:"))
+
+
+def test_title_not_applied_to_other_company():
+    # Caso Blacksmith: sugerencia con id de ZAPI (no seleccionada) resuelta por contenido
+    # hacia Condor → no debe ponerle a Condor el título de ZAPI.
+    from ui.diff_viewer import _collect_suggestion_changes
+    d = {"experiences": [{"id": "exp_condor", "title": "Python Backend Engineer",
+                          "bullets": "Developed RAG pipelines using LangChain"}]}
+    sugg = {"experiences": [{"id": "exp_zapi", "title": "AI Engineer – Founder",
+                             "bullets": "Developed RAG pipelines using LangChain and ChromaDB"}]}
+    changes, _ = _collect_suggestion_changes(d, sugg)
+    assert not any(c["kind"] == "exp_title" for c in changes)
+
+
+def test_evidenced_untiered_skill_goes_to_working_not_exposure():
+    cv = {"skills": [{"text": "Dominio avanzado: Python"},
+                     {"text": "AI/ML: LLMs, OpenAI API, hybrid RAG"}],
+          "experiences": [{"bullets": "Developed RAG pipelines using LangChain\nBuilt RESTful APIs"}]}
+    result = {"missing_keywords": [], "suggestions": {"skills": [
+        "Core skills: Python, OpenAI API",                  # inflado: sin tier → no Core
+        "Working knowledge: Docker",
+        "Exposure to: RAG Pipelines, REST APIs, Figma APIs"]}}
+    lines = sanitize_ai_result(result, cv)["suggestions"]["skills"]
+    working = next(l for l in lines if l.startswith("Working knowledge:"))
+    exposure = next(l for l in lines if l.startswith("Exposure to:"))
+    assert "OpenAI API" in working and "RAG Pipelines" in working and "REST APIs" in working
+    assert "Figma APIs" in exposure                         # sin evidencia: tier más bajo
+
+
+def test_thin_reintegrated_experience_gets_second_bullet():
+    from ai_analyzer import _pad_thin_experiences
+    manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI — Founder"},
+                {"id": "b_hook", "type": "bullet", "parent": "exp_z", "text": "MercadoPago webhooks"},
+                {"id": "b_agent", "type": "bullet", "parent": "exp_z", "text": "AI agents on LangChain with Gemini Vision"},
+                {"id": "b_menu", "type": "bullet", "parent": "exp_z", "text": "React menu with TailwindCSS"}]
+    out = _pad_thin_experiences(manifest, ["exp_z", "b_hook"], ["webhooks", "LangChain", "Gemini"])
+    assert "b_agent" in out and "b_menu" not in out
+    # Sin keywords cubiertos no se agrega nada (no rellena por rellenar).
+    assert _pad_thin_experiences(manifest, ["exp_z", "b_hook"], ["Kubernetes"]) == ["exp_z", "b_hook"]
+
+
+def test_pad_skips_twin_bullet_with_same_text():
+    # QAD: el banco tenía bul_ai_dev_tools con el MISMO texto que bul_de51254e y ZAPI salió
+    # con la línea de Docker repetida.
+    from ai_analyzer import _pad_thin_experiences
+    manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI"},
+                {"id": "b_dock", "type": "bullet", "parent": "exp_z", "text": "Deployed Docker with pgvector"},
+                {"id": "b_twin", "type": "bullet", "parent": "exp_z", "text": "Deployed Docker with pgvector "},
+                {"id": "b_agent", "type": "bullet", "parent": "exp_z", "text": "LangChain agents"}]
+    out = _pad_thin_experiences(manifest, ["exp_z", "b_dock"], ["Docker", "LangChain"])
+    assert "b_twin" not in out and "b_agent" in out
