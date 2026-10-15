@@ -834,10 +834,12 @@ def _pad_thin_experiences(manifest: list[dict], selected_ids: list[str],
         scored = [(sum(_covers(k, _item_evidence_text(b)) for k in kws), b["id"])
                   for b in bullets if b["id"] not in selected
                   and b.get("text", "").strip().lower() not in have]
-        best = max(scored, default=(0, None), key=lambda s: s[0])
-        if best[0] > 0:
-            selected.add(best[1])
-            added.append(best[1])
+        # Hasta 2 bullets: una experiencia exigida por el análisis puede llegar con 0.
+        need = 2 - sum(b["id"] in selected for b in bullets)
+        for score, bid in sorted(scored, key=lambda s: -s[0])[:need]:
+            if score > 0:
+                selected.add(bid)
+                added.append(bid)
     if added:
         logger.info("BANK_SELECT experiencia con 1 bullet reforzada: %s", added)
     return list(selected_ids) + added
@@ -857,6 +859,7 @@ Responde con JSON: {{"selected_ids": ["id1", "id2", ...], "reasoning": "..."}}""
 def select_from_bank(
     manifest: list[dict], vacancy_text: str, api_key: str, model: str,
     protected_keywords: list[str] | None = None, provider: str | None = None,
+    required_ids: list[str] | None = None,
 ) -> list[str]:
     """Pide a la IA que seleccione qué items del banco activar para una vacante.
 
@@ -917,6 +920,14 @@ def select_from_bank(
     # Reintegrar y LUEGO dedup, eximiendo lo reintegrado: así la experiencia ZAPI
     # reintegrada sí elimina el proyecto ZAPI duplicado, pero un proyecto reintegrado
     # como única evidencia de un keyword protegido nunca se descarta.
+    # Experiencias para las que el análisis (banco completo) escribió sugerencias: si la
+    # selección las tira, la sugerencia se descarta y el summary promete lo que el cuerpo
+    # ya no muestra (Kashio: sin DCM, "idempotencia" quedó sin un solo bullet).
+    known = {it["id"] for it in manifest if it.get("type") == "experience"}
+    forced = [i for i in required_ids or [] if i in known and i not in selected_ids]
+    if forced:
+        logger.info("BANK_SELECT experiencia sugerida por el análisis reintegrada: %s", forced)
+        selected_ids = list(selected_ids) + forced
     before = set(selected_ids)
     selected_ids = _reintegrate_lost_evidence(manifest, selected_ids, protected_keywords)
     selected_ids = _drop_projects_duplicating_experience(

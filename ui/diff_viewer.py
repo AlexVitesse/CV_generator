@@ -133,6 +133,24 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> tuple[list, list]
     return changes, dropped
 
 
+def unsupported_summary_claims(summary: str, d: dict, keywords: list) -> list[str]:
+    """Keywords de la vacante que el summary afirma pero ningún bullet, proyecto, skill o
+    certificación del CV actual respalda. El summary se escribe contra el banco COMPLETO y la
+    selección de 1 página poda después (Kashio: prometía "idempotencia" sin DCM en la página).
+    ponytail: match literal por keyword; ES/EN cruzado ("idempotencia" vs "idempotency") da
+    falso positivo — es aviso, no bloqueo. Normalizar por idioma si molesta.
+    """
+    from ai_analyzer import _covers
+    body = " ".join(
+        [str(e.get("bullets", "")) + " " + str(e.get("title", "")) for e in d.get("experiences", [])]
+        + [str(p.get("name", "")) + " " + str(p.get("description", "")) for p in d.get("projects", [])]
+        + [str(x.get("text", "")) for x in d.get("skills", []) + d.get("certifications", [])]
+    ).lower()
+    text = (summary or "").lower()
+    return [k for k in dict.fromkeys(keywords or []) if k and _covers(k.lower(), text)
+            and not _covers(k.lower(), body)]
+
+
 def merge_skill_line(old_skills: list, value: str) -> list:
     """Sustituye las líneas de skills técnicas por la línea sugerida `value`.
 
@@ -221,6 +239,13 @@ def render_suggestions_diff(d: dict, result: dict):
         ch["default"] = not (from_bank and ch["kind"] in ("exp_bullets", "proj_desc"))
     if from_bank:
         st.caption(t("diff_bank_bullets_off"))
+    # Guardrail: un summary que promete lo que el cuerpo no muestra arranca desmarcado.
+    kws = list(result.get("matching_keywords", [])) + list(result.get("missing_keywords", []))
+    for ch in changes:
+        if ch["kind"] == "summary":
+            ch["unsupported"] = unsupported_summary_claims(ch["after"], d, kws)
+            if ch["unsupported"]:
+                ch["default"] = False
 
     # ── Aceptar / rechazar todos ──
     bc1, bc2, _ = st.columns([2, 2, 6])
@@ -245,6 +270,8 @@ def render_suggestions_diff(d: dict, result: dict):
                 value=st.session_state.get(inc_key, ch["default"]),
                 key=inc_key,
             )
+            if ch.get("unsupported"):
+                st.warning(t("diff_summary_unsupported").format(", ".join(ch["unsupported"])))
             edited = st.text_area(
                 t("diff_suggested"),
                 value=ch["after"],

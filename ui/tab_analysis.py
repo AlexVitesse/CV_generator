@@ -110,6 +110,7 @@ def render_analysis_tab(d: dict):
                             st.session_state[sk.AI_MODEL],
                             protected_keywords=result.get("matching_keywords", []),
                             provider=st.session_state.get(sk.AI_PROVIDER),
+                            required_ids=[e.get("id") for e in (result.get("suggestions") or {}).get("experiences", [])],
                         )
                         apply_ai_selection(banco, selected_ids)
                         save_banco(banco)

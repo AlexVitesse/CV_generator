@@ -563,3 +563,30 @@ def test_pad_skips_twin_bullet_with_same_text():
                 {"id": "b_agent", "type": "bullet", "parent": "exp_z", "text": "LangChain agents"}]
     out = _pad_thin_experiences(manifest, ["exp_z", "b_dock"], ["Docker", "LangChain"])
     assert "b_twin" not in out and "b_agent" in out
+
+
+def test_experience_suggested_by_analysis_survives_selection(monkeypatch):
+    # Kashio: el análisis sugirió DCM, la selección lo tiró y la sugerencia se perdió.
+    import ai_analyzer
+    monkeypatch.setattr(ai_analyzer, "_call_validated", lambda *a, **k: {"selected_ids": ["exp_a", "b_a1", "b_a2"]})
+    manifest = [{"id": "exp_a", "type": "experience", "text": "Condor"},
+                {"id": "b_a1", "type": "bullet", "parent": "exp_a", "text": "FastAPI"},
+                {"id": "b_a2", "type": "bullet", "parent": "exp_a", "text": "CI/CD"},
+                {"id": "exp_d", "type": "experience", "text": "DCM"},
+                {"id": "b_d1", "type": "bullet", "parent": "exp_d", "text": "idempotency and rollbacks"},
+                {"id": "b_d2", "type": "bullet", "parent": "exp_d", "text": "AES-256-GCM security"},
+                {"id": "b_d3", "type": "bullet", "parent": "exp_d", "text": "team work"}]
+    out = ai_analyzer.select_from_bank(manifest, "vacante", "k", "m",
+                                       protected_keywords=["idempotency", "AES-256-GCM"],
+                                       required_ids=["exp_d", "exp_inexistente"])
+    assert "exp_d" in out and {"b_d1", "b_d2"} <= set(out) and "b_d3" not in out
+    assert "exp_inexistente" not in out
+
+
+def test_summary_claim_without_body_evidence_is_flagged():
+    from ui.diff_viewer import unsupported_summary_claims
+    d = {"experiences": [{"title": "Backend", "bullets": "Built FastAPI APIs with webhooks"}],
+         "projects": [], "skills": [{"text": "Core: Python, Docker"}], "certifications": []}
+    s = "Backend engineer with Python, webhooks and idempotency; multi-agent architectures."
+    assert unsupported_summary_claims(s, d, ["Python", "webhooks", "idempotency", "multi-agent", "Kafka"]) \
+        == ["idempotency", "multi-agent"]

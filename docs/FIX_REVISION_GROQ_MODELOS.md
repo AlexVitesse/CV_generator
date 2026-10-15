@@ -179,3 +179,22 @@ sin guardar el banco) y se cerraron las diferencias. Suite: **127 tests en verde
 | 2 | Skill sin tier pero evidenciada en el CV caía en "Exposure" | `_evidenced`: con evidencia va a Working (nunca a Core); sin ella, al tier más bajo | `helpers._enforce_skill_tiers` |
 | 3 | Experiencia reintegrada con 1 solo bullet (ZAPI) | `_pad_thin_experiences`: suma su bullet que cubre más keywords protegidos (si cubre ≥1) | `ai_analyzer.select_from_bank` |
 | 4 | ZAPI salió con la misma línea dos veces | El refuerzo salta bullets con texto idéntico a uno ya elegido; se borraron del banco los gemelos `bul_ai_dev_tools`, `bul_d5b606d3`, `bul_72b43b80`, `bul_74785dc0` (respaldo `banco_personal.json.bak5`) | `ai_analyzer._pad_thin_experiences` |
+| 5 | La selección tiraba una experiencia que el análisis sí sugirió (la sugerencia se descartaba y el summary prometía "idempotencia" sin evidencia en la página) | `select_from_bank(required_ids=…)`: las experiencias con sugerencias se reintegran; el refuerzo les da hasta 2 bullets | `ai_analyzer.select_from_bank`, `ui/tab_analysis.py` |
+| 6 | Summary que afirma keywords sin respaldo en el cuerpo ("multi-agent architectures", "idempotencia") | Guardrail `unsupported_summary_claims`: avisa y deja la sugerencia de summary **desmarcada** | `ui/diff_viewer.py`, `i18n.py` |
+
+### Tests (`tests/test_guards.py`, suite: **133 en verde**)
+
+- `test_title_not_applied_to_other_company` (#1)
+- `test_evidenced_untiered_skill_goes_to_working_not_exposure` (#2)
+- `test_thin_reintegrated_experience_gets_second_bullet` (#3)
+- `test_pad_skips_twin_bullet_with_same_text` (#4)
+- `test_experience_suggested_by_analysis_survives_selection` (#5)
+- `test_summary_claim_without_body_evidence_is_flagged` (#6)
+
+### Límites conocidos
+
+- #6 compara keywords literalmente: un summary en español contra bullets en inglés
+  ("idempotencia" vs "idempotency") da falso positivo. Por eso solo avisa y desmarca, no bloquea.
+- #5 reintegra solo experiencias, no proyectos: el proyecto ZAPI sigue descartándose a propósito
+  cuando la experiencia ZAPI está en la página (duplicado).
+- Agregar experiencias puede bajar la escala de letra del PDF (visto 0.88); revisar que siga legible.
