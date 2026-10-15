@@ -75,7 +75,7 @@ def render_sidebar(d: dict):
                         ),
                         api_key=st.session_state.get(sk.AI_API_KEY),
                         model=st.session_state.get(sk.AI_MODEL),
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
 
                     progress_bar.progress(1.0, text="✅")
@@ -101,7 +101,7 @@ def render_sidebar(d: dict):
         if st.button(t("generate_pdf"), type="primary",
                      use_container_width=True):
             try:
-                pdf_buf, cabe, escala = generate_cv_pdf(d, lang=st.session_state[sk.LANG])
+                pdf_buf, cabe, escala = generate_cv_pdf(d)  # títulos en el idioma del contenido
                 st.session_state[sk.PDF_BYTES] = pdf_buf.getvalue()
                 if not cabe:
                     st.warning(t("pdf_no_fit"))
@@ -156,7 +156,7 @@ def render_sidebar(d: dict):
                                 SUMMARY_SYSTEM_PROMPT.format(lang=lang_name),
                                 f"Genera un summary/elevator pitch en {lang_name}.",
                                 vacancy_text=vacancy_ctx,
-                                provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                                provider=st.session_state.get(sk.AI_PROVIDER),
                             )
                         st.session_state[sk.GENERATED_SUMMARY] = summary
                     except Exception as e:
@@ -183,7 +183,7 @@ def render_sidebar(d: dict):
                                     COVER_LETTER_SYSTEM_PROMPT.format(lang=lang_name),
                                     f"Genera una cover letter en {lang_name} para la empresa {_co}.",
                                     vacancy_text=vacancy_ctx,
-                                    provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                                    provider=st.session_state.get(sk.AI_PROVIDER),
                                 )
                             st.session_state[sk.GENERATED_COVER] = cover
                         except Exception as e:
@@ -250,10 +250,10 @@ def render_sidebar(d: dict):
 
         if AI_AVAILABLE:
             from ai_analyzer import save_ai_config
-            from llm_client import PROVIDERS, PROVIDER_LABELS, DEFAULT_MODELS
+            from llm_client import PROVIDERS, PROVIDER_LABELS, DEFAULT_MODELS, DEFAULT_PROVIDER, MODEL_OPTIONS
 
             providers_cfg = st.session_state.setdefault(sk.AI_PROVIDERS, {})
-            cur_provider = st.session_state.get(sk.AI_PROVIDER, "ollama")
+            cur_provider = st.session_state.get(sk.AI_PROVIDER) or DEFAULT_PROVIDER
 
             # ── Selector de proveedor (Ollama / OpenAI / Anthropic / Gemini) ──
             sel_provider = st.selectbox(
@@ -295,7 +295,17 @@ def render_sidebar(d: dict):
                 st.rerun()
 
             new_key = st.text_input(t("ai_api_key"), type="password", key="ai_key_input")
-            new_model = st.text_input(t("ai_model"), key="ai_model_input")
+            # Lista sugerida + cualquier id escrito a mano (accept_new_options). El valor
+            # actual se incluye siempre: si fuera personalizado y no estuviera, el widget fallaría.
+            notes = MODEL_OPTIONS.get(sel_provider, {})
+            model_opts = list(notes)
+            if st.session_state["ai_model_input"] not in model_opts:
+                model_opts.insert(0, st.session_state["ai_model_input"])
+            new_model = st.selectbox(
+                t("ai_model"), options=model_opts, key="ai_model_input",
+                accept_new_options=True, help=t("ai_model_help"),
+                format_func=lambda m: f"{m} — {notes[m]}" if notes.get(m) else m,
+            )
             # Guardar si cambió (por proveedor)
             if new_key != st.session_state[sk.AI_API_KEY] or new_model != st.session_state[sk.AI_MODEL]:
                 st.session_state[sk.AI_API_KEY] = new_key

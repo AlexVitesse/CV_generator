@@ -163,3 +163,27 @@ def test_unknown_provider_raises():
 def test_missing_api_key_raises():
     with pytest.raises(ValueError):
         call_llm([{"role": "user", "content": "hi"}], provider="openai", model="m", api_key="")
+
+
+def test_groq_is_default_and_openai_compatible(capture):
+    out = call_llm(_MSGS, provider=None, model="m", api_key="k", json_mode=True, options=_OPTS)
+    assert out == "OAI"  # Groq responde con el shape de OpenAI
+    assert capture["url"] == llm_client.GROQ_URL
+    assert capture["bodies"][-1]["response_format"] == {"type": "json_object"}
+
+
+def test_legacy_config_stays_on_ollama(tmp_path, monkeypatch):
+    import ai_analyzer
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text('{"api_key": "old", "model": "gpt-oss:120b-cloud"}', encoding="utf-8")
+    monkeypatch.setattr(ai_analyzer, "_config_path", lambda: str(cfg))
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    out = ai_analyzer.load_ai_config()
+    assert out["provider"] == "ollama" and out["api_key"] == "old"
+    cfg.unlink()
+    assert ai_analyzer.load_ai_config()["provider"] == "groq"  # instalación nueva
+
+
+def test_default_model_is_in_options():
+    for p in llm_client.PROVIDERS:
+        assert llm_client.DEFAULT_MODELS[p] in llm_client.MODEL_OPTIONS[p]

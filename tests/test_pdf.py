@@ -83,3 +83,41 @@ def test_fits_flag_matches_page_count():
     pages = PdfReader(buf).get_num_pages()
     assert fits == (pages == 1)
     assert scale < 1.0  # un CV enorme obligó a encoger: el caller debe poder avisarlo
+
+
+# ── Revisión CV BairesDev (14-oct-2026) ──
+
+from pdf import detect_content_lang
+
+
+def test_detect_content_lang():
+    en = {"summary": "Engineer with experience in Python",
+          "experiences": [{"bullets": "Built APIs with FastAPI and deployed them to the cloud"}]}
+    es = {"summary": "Ingeniero con experiencia en Python",
+          "experiences": [{"bullets": [{"text": "Construí APIs con FastAPI para los clientes"}]}]}
+    assert detect_content_lang(en) == "en"
+    assert detect_content_lang(es) == "es"
+    assert detect_content_lang({}) == "es"
+
+
+def test_pdf_headers_follow_content_and_metadata():
+    data = {"name": "Ana Pérez",
+            "summary": "AI Engineer — Python & ML\nProven track record building AI systems",
+            "experiences": [{"company": "Acme", "title": "Engineer", "dates": "2024 – Present",
+                             "location": "Remote",
+                             "bullets": "Built RAG pipelines with Python and LangChain for the team"}]}
+    buf, _, _ = generate_cv_pdf(data)  # sin lang: lo detecta del contenido
+    reader = PdfReader(buf)
+    text = reader.pages[0].extract_text()
+    assert "PROFESSIONAL EXPERIENCE" in text and "EXPERIENCIA PROFESIONAL" not in text
+    # El titular y la frase van en líneas separadas (antes: "...ML Proven track...").
+    assert any(line.strip().startswith("Proven") for line in text.splitlines())
+    assert reader.metadata.title == "Ana Pérez"
+
+
+def test_localize_meta_dates_and_location():
+    from pdf import localize_meta
+    assert localize_meta("Abril 2026 – Junio 2026", "en") == "April 2026 – June 2026"
+    assert localize_meta("Remoto — EE.UU.", "en") == "Remote — USA"
+    assert localize_meta("May 2024 – Present", "es") == "Mayo 2024 – Actualidad"
+    assert localize_meta("Campeche, Mexico", "en") == "Campeche, Mexico"  # sin cambios

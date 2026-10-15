@@ -8,6 +8,7 @@ del candidato. Permite activar/desactivar items por vacante sin perder datos.
 import json
 import logging
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime
@@ -192,6 +193,30 @@ def migrate_from_config(config_path: str) -> dict:
 # FILTRADO: BANCO → CV ACTIVO
 # ═══════════════════════════════════════════════════════════════
 
+_MONTHS = {m: i for i, names in enumerate([
+    ("jan", "ene"), ("feb",), ("mar",), ("apr", "abr"), ("may",), ("jun",),
+    ("jul",), ("aug", "ago"), ("sep", "set"), ("oct",), ("nov",), ("dec", "dic"),
+], start=1) for m in names}
+_CURRENT = ("present", "actualidad", "presente", "current", "actual")
+
+
+def _parse_date(text: str) -> tuple[int, int]:
+    """(año, mes) de "Abril 2026", "May 2024" o "2026" (mes 0 si no hay). (0, 0) si no hay año."""
+    low = text.lower()
+    year = re.search(r"(19|20)\d{2}", low)
+    month = next((n for k, n in _MONTHS.items() if re.search(rf"\b{k}", low)), 0)
+    return (int(year.group()), month) if year else (0, 0)
+
+
+def _date_sort_key(dates: str) -> tuple:
+    """Clave para ordenar experiencias: (es_actual, fin, inicio). Acepta "–", "—" o "-"."""
+    parts = re.split(r"\s+[–—-]\s+", str(dates or ""), maxsplit=1)
+    start = _parse_date(parts[0])
+    end_txt = parts[1] if len(parts) > 1 else parts[0]
+    current = any(w in end_txt.lower() for w in _CURRENT)
+    return (current, (9999, 12) if current else _parse_date(end_txt), start)
+
+
 def bank_to_active_cv(banco: dict) -> dict:
     """Filtra items con active=true y retorna dict compatible con el pipeline.
 
@@ -229,6 +254,10 @@ def bank_to_active_cv(banco: dict) -> dict:
             "dates": exp.get("dates", ""),
             "bullets": "\n".join(active_bullets),
         })
+    # Orden cronológico inverso (convención de CV): puestos actuales primero, luego por
+    # fecha de fin. Antes seguía el orden del banco y un contrato ya terminado (DCM)
+    # quedaba encima del puesto actual y más fuerte (Condor).
+    cv["experiences"].sort(key=lambda e: _date_sort_key(e["dates"]), reverse=True)
 
     # Projects: solo activos
     cv["projects"] = []

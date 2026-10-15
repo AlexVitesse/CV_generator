@@ -248,4 +248,16 @@ def test_bank_to_active_cv_filters_inactive():
     cv = bank_to_active_cv(bank)
     ids = [e["id"] for e in cv["experiences"]]
     assert "exp_b" not in ids
-    assert ids == ["exp_a", "exp_c"]
+    assert ids == ["exp_c", "exp_a"]  # cronológico inverso: 2022 antes que 2020
+
+
+def test_experiences_reverse_chronological():
+    from banco import bank_to_active_cv
+    banco = {"experiences": [
+        {"id": "dcm", "dates": "Abril 2026 – Junio 2026", "bullets": []},
+        {"id": "old", "dates": "Jan 2020 - Dec 2021", "bullets": []},
+        {"id": "condor", "dates": "May 2024 – Present", "bullets": []},
+        {"id": "zapi", "dates": "2026 – Actualidad", "bullets": []},
+    ]}
+    order = [e["id"] for e in bank_to_active_cv(banco)["experiences"]]
+    assert order == ["zapi", "condor", "dcm", "old"]  # actuales primero, luego por fin

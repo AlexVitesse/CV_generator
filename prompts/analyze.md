@@ -133,6 +133,16 @@ reescribe: "Construyó backend systems escalables con FastAPI, procesando 1,200+
    - APLICA ESTO EN TODOS LOS CAMPOS: summary, bullets, proyectos. Cada keyword del JD que tenga \
 equivalente real en el CV DEBE aparecer con la MISMA PALABRA que usa el JD.
    - Solo reformula lo que REALMENTE hizo. No agregues capacidades que no tiene.
+   - ██ FIDELIDAD DEL BULLET (CRÍTICO) ██ Cada bullet sugerido es el MISMO bullet de origen:
+     mismos hechos, mismas tecnologías, mismas métricas. Solo puedes (a) traducirlo, (b) acortarlo,
+     (c) cambiar una etiqueta por el sinónimo EXACTO del JD. PROHIBIDO añadir propósitos, beneficios
+     o dominios que el origen no dice para "acercarlo" a la vacante:
+     · MAL: origen "Built RESTful APIs with FastAPI…" → "Designed RESTful APIs… ensuring strict data quality"
+     · MAL: origen "testing framework with 174 scenarios" → "…174 scenarios, verifying data accuracy"
+     · MAL: origen "Trained five engineers in Python and SQL" → "…in complex SQL querying, cutting data-related incidents"
+     · BIEN: elegir y ORDENAR los bullets del CV que ya evidencian lo que pide el JD.
+   - TÍTULOS DE PUESTO: el "title" de cada experiencia es un HECHO verificable. Devuélvelo IDÉNTICO
+     al del CV; el puesto objetivo de la vacante va SOLO en la línea 1 del summary.
 
 2. DETECCIÓN DE KEYWORDS CRÍTICAS POR FRECUENCIA — Analiza cuántas veces aparece cada tecnología en el JD:
    - Si una tecnología aparece 3+ veces en el JD → es CRÍTICA para el ATS. El reclutador la marcó como prioritaria.

@@ -2,6 +2,9 @@
 
 **Fecha:** 2026-06-18 · rama `main`
 
+> **Actualizado 2026-10-14:** Groq es ahora el proveedor por defecto y los modelos de la tabla
+> cambiaron. Ver [FIX_REVISION_GROQ_MODELOS.md](FIX_REVISION_GROQ_MODELOS.md).
+
 Se añadió la posibilidad de elegir el proveedor de LLM **sin quitar Ollama** (sigue siendo el
 default). Todo por HTTP con `httpx` — **cero dependencias nuevas**. Decisión del usuario:
 HTTP crudo + set de modelos recomendado. Suite: **81 tests en verde** (+9 nuevos en

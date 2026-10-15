@@ -1,6 +1,6 @@
 """
 Módulo de análisis de vacantes y chat asesor con IA.
-Usa Ollama Cloud API nativa (https://ollama.com/api/chat).
+Usa el proveedor de LLM configurado (Groq por defecto) vía llm_client.
 """
 
 import glob
@@ -17,6 +17,7 @@ from llm_client import (
     HTTPX_AVAILABLE as AI_AVAILABLE,
     LLMError,
     PROVIDERS,
+    DEFAULT_PROVIDER,
     DEFAULT_MODELS,
     _parse_json_response,
     call_gemini_vision,
@@ -89,6 +90,7 @@ def load_ai_config() -> dict:
         pass
 
     providers = _default_providers_cfg()
+    fallback = DEFAULT_PROVIDER
     if isinstance(raw.get("providers"), dict):
         for p, vals in raw["providers"].items():
             if p in providers and isinstance(vals, dict):
@@ -98,13 +100,14 @@ def load_ai_config() -> dict:
         # Formato antiguo (un solo proveedor: Ollama).
         providers["ollama"]["api_key"] = raw.get("api_key", "")
         providers["ollama"]["model"] = raw.get("model") or DEFAULT_MODELS["ollama"]
+        fallback = "ollama"  # sus credenciales son de Ollama: no saltar a Groq sin key
 
     # La variable de entorno OLLAMA_API_KEY sigue teniendo prioridad para Ollama.
     env_key = os.getenv("OLLAMA_API_KEY")
     if env_key:
         providers["ollama"]["api_key"] = env_key
 
-    provider = raw.get("provider") if raw.get("provider") in PROVIDERS else "ollama"
+    provider = raw.get("provider") if raw.get("provider") in PROVIDERS else fallback
     active = providers[provider]
     return {
         "provider": provider,
@@ -120,7 +123,7 @@ def save_ai_config(provider: str, api_key: str, model: str):
     Conserva las credenciales de los demás proveedores (lee el disco y actualiza
     solo el proveedor dado), para no perderlas al cambiar de proveedor.
     """
-    provider = provider if provider in PROVIDERS else "ollama"
+    provider = provider if provider in PROVIDERS else DEFAULT_PROVIDER
     cfg = load_ai_config()
     providers = cfg["providers"]
 
@@ -168,13 +171,13 @@ def _log_json_error_context(raw_str: str, err: json.JSONDecodeError, request_id:
 def _call_validated(
     messages: list,
     *,
-    provider: str = "ollama",
+    provider: str | None = None,
     model: str,
     api_key: str,
     options: dict,
     response_model,
     request_id: str,
-    timeout: float = 90.0,
+    timeout: float = 180.0,
 ) -> dict:
     """Llama al LLM en modo JSON, parsea y valida con un modelo Pydantic (V2-08).
 
@@ -246,7 +249,7 @@ def _repair_metrics_once(
     parsed: dict,
     cv_data: dict,
     *,
-    provider: str = "ollama",
+    provider: str | None = None,
     model: str,
     api_key: str,
     request_id: str,
@@ -381,7 +384,7 @@ JSON:
   "suggestions": {{
     "summary": "<resumen adaptado (2 líneas máx, con título de cargo de la vacante) o null si no necesita cambio>",
     "experiences": [
-      {{"id": "<el id EXACTO de experiences[].id del CV JSON — identifica la empresa, NO lo inventes ni cambies>", "title": "<título del cargo adaptado al idioma y vacante>", "bullets": "<máx 5 bullets en 3ra persona con métricas, uno por línea>"}}
+      {{"id": "<el id EXACTO de experiences[].id del CV JSON — identifica la empresa, NO lo inventes ni cambies>", "title": "<título REAL del cargo, idéntico al del CV — NO lo adaptes a la vacante>", "bullets": "<máx 5 bullets en 3ra persona con métricas, uno por línea>"}}
     ],
     "projects": [
       {{"id": "<el id EXACTO de projects[].id del CV JSON — identifica el proyecto, NO lo inventes ni cambies>", "description": "<descripción adaptada con métrica> (MÁXIMO 2 proyectos)"}}
@@ -401,13 +404,27 @@ def build_analysis_prompt(cv_data: dict, vacancy_text: str) -> str:
     )
 
 
+def _normalize_suggestion_text(parsed: dict) -> None:
+    """Algunos modelos (visto: gemini-3.1-pro-preview) devuelven `bullets`/`description`
+    como lista en vez del string "uno por línea" que pide el prompt; el resto del
+    pipeline (sanitize, diff viewer, PDF) espera string. Une la lista con saltos de línea."""
+    sugg = parsed.get("suggestions") or {}
+    for section, field in (("experiences", "bullets"), ("projects", "description")):
+        for item in sugg.get(section) or []:
+            val = item.get(field) if isinstance(item, dict) else None
+            if isinstance(val, list):
+                item[field] = "\n".join(
+                    str(v.get("text", "") if isinstance(v, dict) else v).strip() for v in val
+                ).strip()
+
+
 def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str,
-                    extra_context: str = "", provider: str = "ollama") -> dict:
+                    extra_context: str = "", provider: str | None = None) -> dict:
     """Envía CV + vacante al proveedor de LLM y retorna el análisis parseado."""
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
     if not api_key:
-        raise ValueError("Se requiere API key de Ollama Cloud")
+        raise ValueError("Se requiere API key del proveedor de IA")
 
     user_prompt = build_analysis_prompt(cv_data, vacancy_text)
     if extra_context:
@@ -440,6 +457,7 @@ def analyze_vacancy(cv_data: dict, vacancy_text: str, api_key: str, model: str,
         messages, parsed, cv_data, provider=provider, model=model, api_key=api_key, request_id=request_id,
     )
 
+    _normalize_suggestion_text(parsed)
     _dump_debug("response", ts, request_id, {"parsed_response": parsed})
 
     logger.info("ANALYZE [%s] score=%s viable=%s match_kw=%d miss_kw=%d",
@@ -478,13 +496,13 @@ def generate_text(
     system_prompt: str,
     user_instruction: str,
     vacancy_text: str = "",
-    provider: str = "ollama",
+    provider: str | None = None,
 ) -> str:
     """Genera texto libre (summary, cover letter, etc.) usando el LLM."""
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
     if not api_key:
-        raise ValueError("Se requiere API key de Ollama Cloud")
+        raise ValueError("Se requiere API key del proveedor de IA")
 
     context_msg = build_chat_context_message(cv_data, vacancy_text)
 
@@ -525,13 +543,13 @@ def chat_with_advisor(
     vacancy_text: str = "",
     system_prompt_override: str = "",
     analysis_context: str = "",
-    provider: str = "ollama",
+    provider: str | None = None,
 ) -> str:
     """Envía historial de chat al proveedor de LLM y retorna respuesta en texto."""
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
     if not api_key:
-        raise ValueError("Se requiere API key de Ollama Cloud")
+        raise ValueError("Se requiere API key del proveedor de IA")
 
     context_msg = build_chat_context_message(cv_data, vacancy_text)
     if analysis_context:
@@ -583,7 +601,7 @@ def extract_chat_patch(
     cv_data: dict,
     api_key: str,
     model: str,
-    provider: str = "ollama",
+    provider: str | None = None,
 ) -> dict | None:
     """Extrae un patch JSON de una sugerencia del chat."""
     if not AI_AVAILABLE:
@@ -647,13 +665,13 @@ Evalúa el CV contra la vacante y responde con este JSON exacto:
 
 
 def evaluate_cv_detailed(
-    cv_data: dict, vacancy_text: str, api_key: str, model: str, provider: str = "ollama"
+    cv_data: dict, vacancy_text: str, api_key: str, model: str, provider: str | None = None
 ) -> dict:
     """Envía CV + vacante al proveedor de LLM y retorna evaluación detallada."""
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
     if not api_key:
-        raise ValueError("Se requiere API key de Ollama Cloud")
+        raise ValueError("Se requiere API key del proveedor de IA")
 
     cv_clean = {k: v for k, v in cv_data.items() if k != "id"}
     cv_json = json.dumps(cv_clean, ensure_ascii=False, indent=2)
@@ -711,8 +729,8 @@ def _item_evidence_text(item: dict) -> str:
 def _covers(kw: str, text: str) -> bool:
     """¿`text` evidencia el keyword `kw` como palabra completa? Evita que "Java" quede
     "cubierto" por "JavaScript" o "Go" por "Google" (perdería el bullet real).
-    # ponytail: \\b no cubre C++/C#; si aparece un keyword así, usar _norm_kw."""
-    return re.search(r"\b" + re.escape(kw) + r"\b", text) is not None
+    Lookarounds en vez de \\b para que C++, C# y .NET también funcionen."""
+    return re.search(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", text) is not None
 
 
 def _reintegrate_lost_evidence(
@@ -771,7 +789,8 @@ def _tokens(text: str) -> set[str]:
             if t not in _DEDUP_STOPWORDS}
 
 
-def _drop_projects_duplicating_experience(manifest: list[dict], selected_ids: list[str]) -> list[str]:
+def _drop_projects_duplicating_experience(manifest: list[dict], selected_ids: list[str],
+                                          keep: frozenset = frozenset()) -> list[str]:
     """Quita proyectos que repiten una experiencia ya seleccionada (mismo producto/empresa).
 
     Caso real: ZAPI aparece como experiencia Y como proyecto; salían los dos, gastando
@@ -788,7 +807,7 @@ def _drop_projects_duplicating_experience(manifest: list[dict], selected_ids: li
     out = []
     for i in selected_ids:
         it = by_id.get(i)
-        if it and it.get("type") == "project" and _tokens(it.get("text", "").split(":")[0]) & exp_tokens:
+        if i not in keep and it and it.get("type") == "project" and _tokens(it.get("text", "").split(":")[0]) & exp_tokens:
             logger.info("BANK_SELECT proyecto %s descartado: duplica una experiencia seleccionada", i)
             continue
         out.append(i)
@@ -808,7 +827,7 @@ Responde con JSON: {{"selected_ids": ["id1", "id2", ...], "reasoning": "..."}}""
 
 def select_from_bank(
     manifest: list[dict], vacancy_text: str, api_key: str, model: str,
-    protected_keywords: list[str] | None = None, provider: str = "ollama",
+    protected_keywords: list[str] | None = None, provider: str | None = None,
 ) -> list[str]:
     """Pide a la IA que seleccione qué items del banco activar para una vacante.
 
@@ -821,7 +840,7 @@ def select_from_bank(
     if not AI_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
     if not api_key:
-        raise ValueError("Se requiere API key de Ollama Cloud")
+        raise ValueError("Se requiere API key del proveedor de IA")
 
     manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
     user_prompt = BANK_SELECTION_USER_TEMPLATE.format(
@@ -866,8 +885,13 @@ def select_from_bank(
 
     # Bug C — red de seguridad determinística: si la selección dejó fuera la única
     # evidencia de un keyword ya matcheado, reintégrala (el prompt lo pide, esto lo garantiza).
+    # Reintegrar y LUEGO dedup, eximiendo lo reintegrado: así la experiencia ZAPI
+    # reintegrada sí elimina el proyecto ZAPI duplicado, pero un proyecto reintegrado
+    # como única evidencia de un keyword protegido nunca se descarta.
+    before = set(selected_ids)
     selected_ids = _reintegrate_lost_evidence(manifest, selected_ids, protected_keywords)
-    selected_ids = _drop_projects_duplicating_experience(manifest, selected_ids)
+    selected_ids = _drop_projects_duplicating_experience(
+        manifest, selected_ids, keep=frozenset(selected_ids) - before)
 
     logger.info("BANK_SELECT [%s] ids=%d reasoning=%.200s", request_id, len(selected_ids), reasoning or "")
 

@@ -1,4 +1,4 @@
-"""Cliente único para Ollama Cloud (V2-07).
+"""Cliente único de LLM multi-proveedor (Groq por defecto; V2-07).
 
 Centraliza lo que estaba duplicado 7 veces (ai_analyzer.py x6, translate.py x1):
 el patrón `httpx.post → raise_for_status → data["message"]["content"]`.
@@ -20,24 +20,88 @@ import uuid
 from logging.handlers import RotatingFileHandler
 
 OLLAMA_CLOUD_URL = "https://ollama.com/api/chat"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-# Proveedores de LLM soportados. Ollama es el histórico/por defecto; los demás se
-# añaden sin quitarlo. Todos hablan por HTTP (httpx), sin SDKs extra.
-PROVIDERS = ("ollama", "openai", "anthropic", "gemini")
+# Proveedores de LLM soportados. Groq es el default; los demás son opcionales.
+# Todos hablan por HTTP (httpx), sin SDKs extra.
+DEFAULT_PROVIDER = "groq"
+PROVIDERS = ("groq", "ollama", "openai", "anthropic", "gemini")
 PROVIDER_LABELS = {
+    "groq": "Groq",
     "ollama": "Ollama Cloud",
     "openai": "OpenAI (ChatGPT)",
     "anthropic": "Anthropic (Claude)",
     "gemini": "Google Gemini",
 }
 DEFAULT_MODELS = {
+    "groq": "openai/gpt-oss-120b",
     "ollama": "gpt-oss:120b-cloud",
-    "anthropic": "claude-opus-4-8",
-    "openai": "gpt-5.1",
-    "gemini": "gemini-2.5-flash",
+    "anthropic": "claude-opus-5-5",
+    "openai": "gpt-6.1-sol",
+    "gemini": "gemini-3.8-flash",
+}
+# Modelos sugeridos por proveedor (id → nota corta para el selector). El sidebar
+# permite además escribir cualquier otro id. Revisado 14-oct-2026 contra la doc
+# oficial de cada proveedor; ollama: GET https://ollama.com/api/tags.
+MODEL_OPTIONS = {
+    "groq": {  # todos usables en el plan gratuito, con límites de tokens/min
+        "openai/gpt-oss-120b": "recomendado · gratis con límites",
+        "openai/gpt-oss-20b": "más rápido · gratis con límites",
+        "llama-3.3-70b-versatile": "gratis con límites",
+        "llama-3.1-8b-instant": "muy rápido · no recomendado para análisis",
+        "qwen/qwen3.8-27b": "preview",
+        "minimaxai/minimax-m2.7": "preview",
+    },
+    "ollama": {  # plan Free: crédito mensual inicial, solo un set de modelos "starter"
+        "gpt-oss:120b-cloud": "recomendado (el que ya usabas)",
+        "gpt-oss:120b": "nombre API del mismo modelo",
+        "gpt-oss:20b": "más rápido",
+        "deepseek-v4.1-flash": "rápido",
+        "deepseek-v4-pro:0813": "",
+        "kimi-k3": "",
+        "kimi-k2.6": "",
+        "glm-5.3": "",
+        "glm-5.3-flash": "rápido",
+        "mistral-large-4": "",
+        "minimax-m3": "",
+        "nemotron-3-super": "",
+        "nemotron-3-nano:30b": "rápido",
+        "gemma4:31b": "",
+    },
+    "openai": {
+        "gpt-6.1-sol": "recomendado · calidad/precio",
+        "gpt-6-astra": "el más capaz · caro",
+        "gpt-6-luna": "el más barato",
+        "gpt-5.6-sol": "",
+        "gpt-5.6-luna": "barato",
+        "gpt-5.5": "",
+        "gpt-5.4-mini": "barato",
+        "gpt-5-mini": "barato",
+        "gpt-5-nano": "el más barato · no recomendado para análisis",
+    },
+    "anthropic": {
+        "claude-opus-5-5": "recomendado",
+        "claude-sonnet-5-5": "más rápido · más barato",
+        "claude-haiku-5-5": "el más rápido y barato",
+        "claude-fable-5-1": "el más capaz · caro",
+        "claude-opus-4-8": "legacy",
+        "claude-sonnet-4-6": "legacy",
+        "claude-haiku-4-5": "legacy",
+    },
+    "gemini": {
+        "gemini-3.8-flash": "recomendado",
+        "gemini-4-argon": "el más capaz",
+        "gemini-3.6-flash": "",
+        "gemini-3.5-flash-lite": "barato · no recomendado para análisis (score inflado)",
+        "gemini-3.1-flash-lite": "barato · no recomendado para análisis",
+        "gemini-3.1-pro-preview": "preview",
+        "gemini-3-flash-preview": "preview",
+        "gemini-2.5-flash": "legacy · solo cuentas que ya lo usaban",
+        "gemini-2.5-pro": "legacy · solo cuentas que ya lo usaban",
+    },
 }
 # Tope de tokens de salida para los proveedores que lo exigen (Anthropic) o que se
 # benefician de un límite explícito. 16k cubre con holgura un CV/JSON de análisis.
@@ -161,15 +225,17 @@ def _parse_json_response(raw: str) -> dict:
         lines = [l for l in raw.split("\n") if not l.strip().startswith("```")]
         raw = "\n".join(lines).strip()
     try:
-        return json.loads(raw)
+        # strict=False: tolera saltos de línea/tabs crudos dentro de strings
+        # ("Invalid control character"), frecuente en Gemini; evita gastar un reintento.
+        return json.loads(raw, strict=False)
     except json.JSONDecodeError:
         start, end = raw.find("{"), raw.rfind("}")
         candidate = raw[start:end + 1] if (start != -1 and end > start) else raw
         try:
-            return json.loads(candidate)
+            return json.loads(candidate, strict=False)
         except json.JSONDecodeError:
             # Último recurso: reparar comas faltantes/sobrantes fuera de strings.
-            return json.loads(_repair_json(candidate))
+            return json.loads(_repair_json(candidate), strict=False)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -326,7 +392,9 @@ def _retry(do_call, *, rid: str, provider: str, model: str, retries: int) -> str
     raise LLMError(f"{PROVIDER_LABELS.get(provider, provider)} falló: {_describe_error(last_err)}")
 
 
-def _call_openai(messages, *, model, api_key, json_mode, options, timeout, rid, retries):
+def _call_openai(messages, *, model, api_key, json_mode, options, timeout, rid, retries,
+                 url=OPENAI_URL, provider="openai"):
+    # Groq expone la misma API (OpenAI-compatible): solo cambian url y provider.
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     opts = options or {}
 
@@ -338,7 +406,7 @@ def _call_openai(messages, *, model, api_key, json_mode, options, timeout, rid, 
             for key in ("temperature", "top_p", "seed"):
                 if opts.get(key) is not None:
                     body[key] = opts[key]
-        r = httpx.post(OPENAI_URL, headers=headers, json=body, timeout=_mk_timeout(timeout))
+        r = httpx.post(url, headers=headers, json=body, timeout=_mk_timeout(timeout))
         r.raise_for_status()
         data = r.json()
         return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
@@ -355,7 +423,7 @@ def _call_openai(messages, *, model, api_key, json_mode, options, timeout, rid, 
                 return _post(strip_sampling=True)
             raise
 
-    return _retry(do_call, rid=rid, provider="openai", model=model, retries=retries)
+    return _retry(do_call, rid=rid, provider=provider, model=model, retries=retries)
 
 
 def _call_anthropic(messages, *, model, api_key, json_mode, options, timeout, rid, retries):
@@ -525,7 +593,7 @@ def call_gemini_vision(
 def call_llm(
     messages: list,
     *,
-    provider: str,
+    provider: str | None,
     model: str,
     api_key: str,
     json_mode: bool = False,
@@ -536,13 +604,13 @@ def call_llm(
 ) -> str:
     """Llama al proveedor indicado y devuelve el texto del asistente (str no vacío).
 
-    Enruta a Ollama (por defecto), OpenAI, Anthropic o Gemini. Mismo contrato que
+    Enruta a Groq (por defecto), Ollama, OpenAI, Anthropic o Gemini. Mismo contrato que
     `call_ollama` para no tocar el resto del pipeline (los callers siguen parseando
     con `_parse_json_response`).
     """
     if not HTTPX_AVAILABLE:
         raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
-    p = (provider or "ollama").lower()
+    p = (provider or DEFAULT_PROVIDER).lower()
     if not api_key:
         raise ValueError(f"Se requiere API key de {PROVIDER_LABELS.get(p, p)}")
     rid = request_id or new_request_id()
@@ -550,6 +618,10 @@ def call_llm(
     if p == "ollama":
         return call_ollama(messages, model=model, api_key=api_key, json_mode=json_mode,
                            options=options, timeout=timeout, retries=retries, request_id=rid)
+    if p == "groq":
+        return _call_openai(messages, model=model, api_key=api_key, json_mode=json_mode,
+                            options=options, timeout=timeout, rid=rid, retries=retries,
+                            url=GROQ_URL, provider="groq")
     backend = {"openai": _call_openai, "anthropic": _call_anthropic, "gemini": _call_gemini}.get(p)
     if backend is None:
         raise ValueError(f"Proveedor de LLM no soportado: {provider}")

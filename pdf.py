@@ -20,6 +20,7 @@ from reportlab.platypus import (
 from reportlab.lib.colors import black
 
 from i18n import LANG
+from metrics_guard import _as_text
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -122,7 +123,54 @@ def link(url: str, display: str, kind: str = "url") -> str:
 # GENERACIÓN DE PDF
 # ═══════════════════════════════════════════════════════════════
 
-def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]:
+# Palabras funcionales exclusivas de cada idioma (sin ambiguas como "a").
+_ES_WORDS = {"de", "la", "el", "en", "con", "para", "los", "las", "y", "del", "por", "una", "que"}
+_EN_WORDS = {"the", "and", "with", "for", "of", "to", "in", "using", "by", "on", "an", "across"}
+
+
+def text_lang(text: str) -> str | None:
+    """Idioma de un texto suelto ("es"/"en") por palabras funcionales; None si no hay señal."""
+    words = re.findall(r"[a-záéíóúñ]+", str(text or "").lower())
+    es = sum(w in _ES_WORDS for w in words)
+    en = sum(w in _EN_WORDS for w in words)
+    return None if es == en else ("en" if en > es else "es")
+
+
+def detect_content_lang(data: dict) -> str:
+    """Idioma dominante del CUERPO del CV (summary, bullets, proyectos): "es" o "en".
+
+    Los títulos de sección del PDF deben coincidir con el contenido, no con el idioma
+    de la UI: un CV en inglés con "EXPERIENCIA PROFESIONAL" se ve mal ante un
+    reclutador o un filtro de IA. Empate o sin texto → "es".
+    """
+    parts = [data.get("summary", "")]
+    parts += [_as_text(e.get("bullets")) for e in data.get("experiences", []) if isinstance(e, dict)]
+    parts += [_as_text(p.get("description")) for p in data.get("projects", []) if isinstance(p, dict)]
+    words = re.findall(r"[a-záéíóúñ]+", " ".join(str(x) for x in parts).lower())
+    es = sum(w in _ES_WORDS for w in words)
+    en = sum(w in _EN_WORDS for w in words)
+    return "en" if en > es else "es"
+
+
+_ES_TO_EN = {
+    "Enero": "January", "Febrero": "February", "Marzo": "March", "Abril": "April",
+    "Mayo": "May", "Junio": "June", "Julio": "July", "Agosto": "August",
+    "Septiembre": "September", "Octubre": "October", "Noviembre": "November",
+    "Diciembre": "December", "Actualidad": "Present", "Remoto": "Remote", "EE.UU.": "USA",
+}
+_EN_TO_ES = {v: k for k, v in _ES_TO_EN.items()}
+
+
+def localize_meta(text: str, lang: str) -> str:
+    """Traduce meses, "Actualidad/Present" y "Remoto/Remote" de fechas y ubicaciones al
+    idioma del contenido. Evita "Abril 2026 – Junio 2026" junto a "May 2024 – Present"
+    cuando el banco mezcla idiomas (estos campos no pasan por la adaptación de la IA)."""
+    table = _ES_TO_EN if lang == "en" else _EN_TO_ES
+    pattern = r"(?<![\w.])(" + "|".join(re.escape(k) for k in table) + r")(?!\w)"
+    return re.sub(pattern, lambda m: table[m.group(1)], str(text or ""))
+
+
+def generate_cv_pdf(data: dict, lang: str | None = None) -> tuple[BytesIO, bool, float]:
     """Genera un PDF de CV en formato Harvard, escalando dinámicamente si excede 1 página.
 
     Retorna (buffer, cabe_en_1_pagina, escala_usada). La escala importa: "cupo" a 0.76
@@ -130,6 +178,7 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]
     que recortes contenido en vez de aceptar letra chica.
     """
 
+    lang = lang or detect_content_lang(data)
     labels = LANG.get(lang, LANG["es"])
 
     # Probamos factores de escala desde 1.0 hasta 0.80 para forzar que quepa en 1 sola página
@@ -144,6 +193,8 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]
             buf, pagesize=letter,
             topMargin=mt, bottomMargin=mb,
             leftMargin=ml, rightMargin=mr,
+            # Metadatos: algunos ATS muestran el título del PDF; sin esto sale "(anonymous)".
+            title=data.get("name", "") or "CV", author=data.get("name", ""),
         )
 
         # ── Estilos escalados ──────────────────────────────────
@@ -236,7 +287,9 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]
 
         summary = data.get("summary", "").strip()
         if summary:
-            story.append(Paragraph(safe(summary), s_summary))
+            # Paragraph colapsa "\n" a espacio: "...Machine Learning Proven track..."
+            # quedaba pegado. El salto entre titular y frase se respeta con <br/>.
+            story.append(Paragraph(safe(summary).replace("\n", "<br/>"), s_summary))
 
         story.append(HRFlowable(
             width="100%", thickness=0.75, color=black,
@@ -254,11 +307,11 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]
             for exp in experiences:
                 story.append(row2(
                     exp.get("company", ""), s_bold_l,
-                    exp.get("location", ""), s_norm_r,
+                    localize_meta(exp.get("location", ""), lang), s_norm_r,
                 ))
                 story.append(row2(
                     exp.get("title", ""), s_ital_l,
-                    exp.get("dates", ""), s_ital_r,
+                    localize_meta(exp.get("dates", ""), lang), s_ital_r,
                 ))
                 story.append(Spacer(1, 3 * sf))
                 bullets_raw = exp.get("bullets", "")
@@ -304,11 +357,11 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]
             for edu in education:
                 story.append(row2(
                     edu.get("institution", ""), s_bold_l,
-                    edu.get("location", ""), s_norm_r,
+                    localize_meta(edu.get("location", ""), lang), s_norm_r,
                 ))
                 story.append(row2(
                     edu.get("degree", ""), s_ital_l,
-                    edu.get("date", ""), s_ital_r,
+                    localize_meta(edu.get("date", ""), lang), s_ital_r,
                 ))
                 details = edu.get("details", "").strip()
                 if details:

@@ -124,12 +124,15 @@ def _restore_ids_with_fallback(data_section: list, trans_section: list, source: 
     # cuando está; si no, se consume de la cola sin-id. Un item intermedio omitido deja un
     # hueco (None) en SU posición — nunca corre la lista para que los bullets de B caigan
     # bajo A. Cada hueco se rellena luego traduciendo su PROPIO original.
+    # Un id que no existe en los originales (el LLM lo alteró: exp_a → exp-a) cuenta
+    # como "sin id": se consume por posición en vez de agregarse como item extra.
+    orig_ids = {o.get("id") for o in data_section if isinstance(o, dict) and o.get("id")}
     trans_by_id = {
         it["id"]: it for it in trans_section
-        if isinstance(it, dict) and it.get("id")
+        if isinstance(it, dict) and it.get("id") in orig_ids
     }
     no_id = [it for it in trans_section
-             if not (isinstance(it, dict) and it.get("id"))]
+             if not (isinstance(it, dict) and it.get("id") in orig_ids)]
     ni = iter(no_id)
     aligned = []
     for orig in data_section:
@@ -138,8 +141,6 @@ def _restore_ids_with_fallback(data_section: list, trans_section: list, source: 
             aligned.append(trans_by_id.pop(oid))  # pop: nunca reutilizar la misma traducción
         else:
             aligned.append(next(ni, None))         # None = hueco a rellenar por fallback
-    # Conservar traducciones sobrantes (ids extra que no mapean a ningún original).
-    aligned.extend(trans_by_id.values())
 
     # ── Rellenar cada hueco traduciendo el ORIGINAL de esa misma posición ──
     holes = [i for i, t in enumerate(aligned) if t is None]
@@ -167,7 +168,7 @@ def _translate_fallback(text: str, source: str, target: str) -> str:
 
 
 def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, model: str,
-                         provider: str = "ollama") -> dict:
+                         provider: str | None = None) -> dict:
     """Traduce la estructura completa del CV usando el LLM en una sola llamada."""
     cv_clean = copy.deepcopy(data)
 
@@ -230,7 +231,7 @@ def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, mod
 
 def translate_cv_data(data: dict, source: str, target: str,
                        progress_callback=None, api_key: str = None, model: str = None,
-                       provider: str = "ollama") -> dict:
+                       provider: str | None = None) -> dict:
     """Traduce todos los campos de texto del CV. Usa traducción por IA si api_key está disponible,
     si no, o si falla, usa deep-translator."""
     if api_key and model:

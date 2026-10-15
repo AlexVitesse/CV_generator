@@ -9,6 +9,7 @@ import re
 import streamlit as st
 
 from helpers import uid, sync_widgets_to_data
+import session_keys as sk
 from i18n import t
 from llm_client import get_logger
 from metrics_guard import resolve_target_index
@@ -121,8 +122,8 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> tuple[list, list]
     # Skills
     if suggestions.get("skills"):
         raw_skills = suggestions["skills"]
-        after = " | ".join(raw_skills) if isinstance(raw_skills, list) else str(raw_skills)
-        before = " | ".join(sk.get("text", "") for sk in d.get("skills", []))
+        after = "\n".join(raw_skills) if isinstance(raw_skills, list) else str(raw_skills)
+        before = "\n".join(sk.get("text", "") for sk in d.get("skills", []))
         _add("skills", "skills", None, t("diff_field_skills"), before, after)
 
     return changes, dropped
@@ -137,16 +138,20 @@ def merge_skill_line(old_skills: list, value: str) -> list:
     como línea suelta en cada "Guardar CV al banco" (así entraron `2a963b4b` y
     `d8c53127`). Función pura para poder testearla sin Streamlit.
     """
-    preserved, replaced_id = [], None
+    preserved, tech_ids = [], []
     for sk in old_skills:
         txt = sk.get("text", "")
         low = txt.lower()
         if "cert" in low or "idioma" in low or "language" in low:
             if txt.strip() not in value:
                 preserved.append(sk)
-        elif replaced_id is None:
-            replaced_id = sk.get("id")
-    return [{"id": replaced_id or uid(), "text": value.strip()}] + preserved
+        else:
+            tech_ids.append(sk.get("id"))
+    # Una entrada POR tier (escaneable en el PDF). Acepta líneas separadas por "\n" o
+    # el formato viejo "A | B | C". Reusa los ids técnicos en orden; uid solo si sobran.
+    lines = [l.strip() for l in re.split(r"\n| \| ", value) if l.strip()]
+    ids = iter(tech_ids)
+    return [{"id": next(ids, None) or uid(), "text": l} for l in lines] + preserved
 
 
 def _apply_selected_changes(d: dict, changes: list) -> int:
@@ -157,7 +162,7 @@ def _apply_selected_changes(d: dict, changes: list) -> int:
     projs = d.get("projects", [])
 
     for ch in changes:
-        if not st.session_state.get(f"diffinc_{ch['key']}", True):
+        if not st.session_state.get(f"diffinc_{ch['key']}", ch.get("default", True)):
             continue
         value = st.session_state.get(f"diffta_{ch['key']}", ch["after"])
         kind, idx = ch["kind"], ch["index"]
@@ -204,6 +209,15 @@ def render_suggestions_diff(d: dict, result: dict):
     st.caption(t("diff_intro"))
     st.caption(t("diff_legend"))
 
+    # CV armado desde el banco: sus bullets/proyectos YA son texto real elegido por la
+    # selección. La reescritura del modelo tiende a adornarlos hacia el JD ("ensuring
+    # data quality", métricas mezcladas), así que arranca DESMARCADA (opt-in).
+    from_bank = bool((st.session_state.get(sk.BANCO) or {}).get("experiences"))
+    for ch in changes:
+        ch["default"] = not (from_bank and ch["kind"] in ("exp_bullets", "proj_desc"))
+    if from_bank:
+        st.caption(t("diff_bank_bullets_off"))
+
     # ── Aceptar / rechazar todos ──
     bc1, bc2, _ = st.columns([2, 2, 6])
     with bc1:
@@ -224,7 +238,7 @@ def render_suggestions_diff(d: dict, result: dict):
         with st.container(border=True):
             st.checkbox(
                 f"**{ch['label']}** — {t('diff_include')}",
-                value=st.session_state.get(inc_key, True),
+                value=st.session_state.get(inc_key, ch["default"]),
                 key=inc_key,
             )
             edited = st.text_area(

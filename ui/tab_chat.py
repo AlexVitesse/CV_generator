@@ -110,7 +110,7 @@ def render_chat_tab(d: dict):
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
                         vacancy_text=vacancy_ctx,
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
                     st.markdown(reply)
                     st.session_state[sk.CHAT_MESSAGES].append(
@@ -136,7 +136,7 @@ def render_chat_tab(d: dict):
                         last_msg, d,
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
                     if patch:
                         st.session_state[sk.CHAT_PENDING_PATCH] = patch

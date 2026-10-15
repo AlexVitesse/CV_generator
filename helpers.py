@@ -281,7 +281,7 @@ def _parse_skill_tiers(line: str):
 
 
 def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
-    """Devuelve cada skill a su tier original si la IA la promovió de nivel.
+    """Devuelve cada skill a su tier original si la IA la promovió o degradó de nivel.
     Las skills nuevas (inferidas) nunca pueden quedar en el tier avanzado."""
     orig_rank = {}
     for line in original_lines:
@@ -301,8 +301,11 @@ def _enforce_skill_tiers(suggested: str, original_lines: list) -> str:
     for _label, rank, skills in sugg:
         for sk in skills:
             known = orig_rank.get(sk.lower())
-            if known is not None and known > rank and known in ranks_present:
-                target = known  # estaba en un tier inferior: regresarla ahí
+            if known is not None and known != rank and known in ranks_present:
+                # El tier es un HECHO en ambos sentidos: ni inflar (Familiaridad→Core) ni
+                # degradar (visto: FastAPI de "Dominio avanzado" bajada a Working knowledge).
+                # Si es un missing_keyword, _demote_missing_keyword_skills la baja después.
+                target = known
             elif known is None and rank < lowest:
                 target = lowest  # skill nueva inferida → siempre al tier más bajo
             else:
@@ -325,6 +328,40 @@ def _norm_kw(s: str) -> str:
     """Normaliza una skill/keyword para comparar: 'Next.js (solid experience)' → 'nextjs'.
     Conserva + y # para C++/C#."""
     return re.sub(r"[^a-z0-9+#]", "", str(s or "").split("(")[0].lower())
+
+
+def _restore_core_skills(suggested: str, original_lines: list) -> str:
+    """Re-agrega las skills de DOMINIO AVANZADO del CV original que la IA eliminó.
+
+    El prompt pide conservar todas, pero el modelo las recorta para "enfocar" (visto:
+    FastAPI y Oracle Cloud desaparecieron en una vacante de datos). Solo el tier
+    superior: re-agregar también los intermedios alargaría la línea sin aportar.
+    Van al tier más alto PRESENTE en la sugerencia (nunca a uno superior al original).
+    """
+    sugg = _parse_skill_tiers(suggested)
+    if not sugg:
+        return suggested
+    present = [_norm_kw(s) for _, _, skills in sugg for s in skills]
+
+    def _has(n):  # "Oracle Cloud" ya cubierto por "Oracle Cloud Infrastructure"
+        return any(n in p or p in n for p in present if p)
+
+    lost = []
+    for line in original_lines:
+        for _label, rank, skills in _parse_skill_tiers(line) or []:
+            if rank == 0:
+                for s in skills:
+                    n = _norm_kw(s)
+                    if n and not _has(n):
+                        lost.append(s)
+                        present.append(n)
+    if not lost:
+        return suggested
+    top = min(rank for _, rank, _ in sugg)
+    return " | ".join(
+        f"{label}: {', '.join(skills + lost if rank == top else skills)}"
+        for label, rank, skills in sugg
+    )
 
 
 def _demote_missing_keyword_skills(suggested: str, missing_keywords: list) -> str:
@@ -468,8 +505,15 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
         suggestions["summary"] = _fix_stuck_words(suggestions["summary"], own_terms)
 
     # ── Fix experience titles y bullets ──
+    # El título de un puesto es un HECHO (lo verifica una referencia o LinkedIn): se
+    # restaura el real por id aunque el modelo lo "adapte" a la vacante (visto: "Python
+    # Backend Engineer" → "Python Data & Systems Engineer").
+    real_titles = {e.get("id"): e.get("title") for e in (cv_data or {}).get("experiences", [])
+                   if isinstance(e, dict) and e.get("id") and e.get("title")}
     for exp in suggestions.get("experiences", []):
-        if exp.get("title"):
+        if exp.get("id") in real_titles:
+            exp["title"] = real_titles[exp["id"]]
+        elif exp.get("title"):
             exp["title"] = _fix_stuck_words(exp["title"], own_terms)
         if exp.get("bullets"):
             exp["bullets"] = _strip_parenthetical_notes(exp["bullets"])
@@ -498,8 +542,10 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
                 combined = " | ".join(tier_lines)
                 if original_lines:
                     combined = _enforce_skill_tiers(combined, original_lines)
+                    combined = _restore_core_skills(combined, original_lines)
                 combined = _demote_missing_keyword_skills(combined, missing_kw)
-                suggestions["skills"] = [combined] + other
+                # Re-separar: una línea por tier (escaneable, como pide el prompt).
+                suggestions["skills"] = combined.split(" | ") + other
             else:
                 suggestions["skills"] = lines
 
@@ -592,6 +638,18 @@ def detect_vacancy_language(text: str) -> str:
     return "en" if en_count > es_count else "es"
 
 
+def has_foreign_text(d: dict, lang: str) -> bool:
+    """¿Algún summary/bullet/descripción está en otro idioma que `lang`? El banco mezcla
+    idiomas y los bullets se usan TAL CUAL (sin reescritura), así que el idioma de la
+    sesión no basta para decidir si hay que traducir."""
+    from pdf import text_lang
+    texts = str(d.get("summary", "")).split("\n")
+    for e in d.get("experiences", []):
+        texts += str(e.get("bullets", "")).split("\n")
+    texts += [p.get("description", "") for p in d.get("projects", [])]
+    return any(text_lang(x) not in (None, lang) for x in texts)
+
+
 def deferred_translate_and_reevaluate(d: dict):
     """Auto-traduce el CV si hay mismatch de idioma con la vacante, luego re-evalúa."""
     vacancy_text = st.session_state.get(sk.VACANCY_TEXT, "").strip()
@@ -602,7 +660,8 @@ def deferred_translate_and_reevaluate(d: dict):
     content_lang = st.session_state.get(sk.CONTENT_LANG, "es")
 
     # Auto-traducir si hay mismatch de idioma
-    if vacancy_lang != content_lang and TRANSLATOR_AVAILABLE:
+    if TRANSLATOR_AVAILABLE and (vacancy_lang != content_lang
+                                 or has_foreign_text(d, vacancy_lang)):
         try:
             translated = translate_cv_data(
                 d,
@@ -610,7 +669,7 @@ def deferred_translate_and_reevaluate(d: dict):
                 target=vacancy_lang,
                 api_key=st.session_state.get(sk.AI_API_KEY),
                 model=st.session_state.get(sk.AI_MODEL),
-                provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                provider=st.session_state.get(sk.AI_PROVIDER),
             )
             st.session_state[sk.CV] = translated
             st.session_state[sk.CONTENT_LANG] = vacancy_lang
@@ -640,7 +699,7 @@ def deferred_translate_and_reevaluate(d: dict):
             st.session_state[sk.AI_API_KEY],
             st.session_state[sk.AI_MODEL],
             extra_context=extra_context,
-            provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+            provider=st.session_state.get(sk.AI_PROVIDER),
         )
         result = clamp_reeval_score(result, prev_result)
         st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(result, d)

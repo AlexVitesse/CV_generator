@@ -94,7 +94,7 @@ def render_analysis_tab(d: dict):
                         d_full, vacancy_text,
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
                 st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(result, d_full)
 
@@ -109,7 +109,7 @@ def render_analysis_tab(d: dict):
                             st.session_state[sk.AI_API_KEY],
                             st.session_state[sk.AI_MODEL],
                             protected_keywords=result.get("matching_keywords", []),
-                            provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                            provider=st.session_state.get(sk.AI_PROVIDER),
                         )
                         apply_ai_selection(banco, selected_ids)
                         save_banco(banco)
@@ -224,7 +224,7 @@ def render_refine_chat(d: dict, result: dict):
                         vacancy_text=vacancy_ctx,
                         system_prompt_override=REFINE_CHAT_SYSTEM_PROMPT,
                         analysis_context=analysis_ctx,
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
                     st.markdown(reply)
                     st.session_state[sk.REFINE_MESSAGES].append(
@@ -253,7 +253,7 @@ def render_refine_chat(d: dict, result: dict):
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
                         extra_context=extra,
-                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
+                        provider=st.session_state.get(sk.AI_PROVIDER),
                     )
                 st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(new_result, d)
                 st.session_state[sk.NEEDS_WIDGET_PUSH] = True

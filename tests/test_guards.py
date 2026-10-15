@@ -280,9 +280,10 @@ def test_skill_tiers_enforced_on_array_form():
     result = {"missing_keywords": [], "suggestions": {"skills": [
         "Core skills: Python, Rust", "Working knowledge: Docker", "Exposure to: Bash",
     ]}}
-    out = sanitize_ai_result(result, cv)["suggestions"]["skills"][0]
-    assert "Rust" in out.split("Exposure to:")[1]          # degradada al tier bajo
-    assert "Rust" not in out.split("|")[0]                  # ya no en 'Core skills'
+    lines = sanitize_ai_result(result, cv)["suggestions"]["skills"]
+    assert len(lines) > 1 and not any(" | " in l for l in lines)  # una línea por tier
+    assert lines[0].startswith("Core skills:") and "Rust" not in lines[0]
+    assert "Rust" in next(l for l in lines if l.startswith("Exposure to:"))  # degradada
 
 
 # ── #9 — evidencia protegida por palabra completa (no substring) ──
@@ -403,3 +404,111 @@ def test_merge_skill_line_reuses_id_and_keeps_languages():
     out = merge_skill_line(old, "Core skills: Python, Go")
     assert out[0]["id"] == "sk_tech"          # mismo id → merge_cv_to_bank actualiza
     assert out[1]["id"] == "sk_lang"          # la línea de idiomas sobrevive
+
+
+# ── Revisión 14-oct-2026 ──
+
+from ai_analyzer import _covers
+
+
+def test_covers_symbol_keywords():
+    assert _covers("c++", "python, c++ y go")
+    assert _covers(".net", "c#, .net core")
+    assert _covers("c#", "c#, .net core")
+    assert not _covers("java", "javascript")
+
+
+def test_reintegrated_project_survives_dedup(monkeypatch):
+    import ai_analyzer
+    manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
+                {"id": "proj_z", "type": "project", "text": "ZAPI — SaaS: multi-tenant", "tags": ["kafka"]}]
+    monkeypatch.setattr(ai_analyzer, "_call_validated",
+                        lambda *a, **k: {"selected_ids": ["exp_z"], "reasoning": ""})
+    out = ai_analyzer.select_from_bank(manifest, "vacante", "k", "m", protected_keywords=["kafka"])
+    assert "proj_z" in out  # única evidencia de un keyword protegido: no se descarta
+
+
+def test_translation_mangled_id_does_not_duplicate(monkeypatch):
+    import translate
+    monkeypatch.setattr(translate, "_translate_fallback", lambda t, s, g: t + "[fb]")
+    data = [{"id": "exp_a", "title": "Ingeniero"}, {"id": "exp_b", "title": "Dev"}]
+    trans = [{"id": "exp-a", "title": "Engineer"}, {"id": "exp_b", "title": "Dev"}]
+    _restore_ids_with_fallback(data, trans, "es", "en")
+    assert [t["id"] for t in trans] == ["exp_a", "exp_b"]
+    assert trans[0]["title"] == "Engineer"
+
+
+def test_list_bullets_are_joined():
+    from ai_analyzer import _normalize_suggestion_text
+    parsed = {"suggestions": {"experiences": [{"id": "e", "bullets": ["Hizo A", {"text": "Hizo B"}]}],
+                              "projects": [{"id": "p", "description": ["Desc"]}]}}
+    _normalize_suggestion_text(parsed)
+    assert parsed["suggestions"]["experiences"][0]["bullets"] == "Hizo A\nHizo B"
+    assert parsed["suggestions"]["projects"][0]["description"] == "Desc"
+
+
+def test_reintegrated_experience_still_dedups_project(monkeypatch):
+    # Caso Mirai: la reintegración re-agrega la EXPERIENCIA ZAPI; el proyecto ZAPI que
+    # eligió el modelo debe caer (antes salían los dos).
+    import ai_analyzer
+    manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
+                {"id": "bul_z", "type": "bullet", "parent": "exp_z", "text": "Deployed pgvector services"},
+                {"id": "proj_z", "type": "project", "text": "ZAPI — SaaS: multi-tenant"}]
+    monkeypatch.setattr(ai_analyzer, "_call_validated",
+                        lambda *a, **k: {"selected_ids": ["proj_z"], "reasoning": ""})
+    out = ai_analyzer.select_from_bank(manifest, "vacante", "k", "m", protected_keywords=["pgvector"])
+    assert "exp_z" in out and "proj_z" not in out
+
+
+def test_parse_json_tolerates_raw_newline_in_string():
+    from llm_client import _parse_json_response
+    assert _parse_json_response('{"a": "linea1\nlinea2"}') == {"a": "linea1\nlinea2"}
+
+
+def test_real_job_title_is_restored():
+    cv = {"experiences": [{"id": "exp_c", "title": "Python Backend Engineer"}]}
+    result = {"suggestions": {"experiences": [
+        {"id": "exp_c", "title": "Python Data & Systems Engineer", "bullets": "Built APIs"}]}}
+    out = sanitize_ai_result(result, cv)["suggestions"]["experiences"][0]
+    assert out["title"] == "Python Backend Engineer"
+
+
+def test_merge_skill_line_one_entry_per_tier():
+    from ui.diff_viewer import merge_skill_line
+    old = [{"id": "sk1", "text": "Core skills: Python"}, {"id": "sk2", "text": "Exposure to: Go"},
+           {"id": "sk_lang", "text": "Languages: Spanish"}]
+    out = merge_skill_line(old, "Core skills: Python\nWorking knowledge: SQL\nExposure to: Go")
+    assert [s["text"] for s in out[:3]] == ["Core skills: Python", "Working knowledge: SQL", "Exposure to: Go"]
+    assert out[0]["id"] == "sk1" and out[1]["id"] == "sk2"   # reusa ids en orden
+    assert out[-1]["id"] == "sk_lang"
+    legacy = merge_skill_line(old, "Core skills: Python | Exposure to: Go")
+    assert len(legacy) == 3                                    # formato viejo también se separa
+
+
+def test_dropped_core_skills_are_restored():
+    cv = {"skills": [{"text": "Dominio avanzado: Python, FastAPI, Oracle Cloud"},
+                     {"text": "Dominio intermedio: React"}]}
+    result = {"missing_keywords": [], "suggestions": {"skills": [
+        "Core skills: Python, SQL", "Exposure to: Oracle Cloud Infrastructure"]}}
+    lines = sanitize_ai_result(result, cv)["suggestions"]["skills"]
+    core = next(l for l in lines if l.startswith("Core skills:"))
+    assert "FastAPI" in core                                # re-agregada a su tier
+    assert sum("Oracle Cloud" in l for l in lines) == 1      # "Oracle Cloud Infrastructure" ya la cubría
+    assert not any("React" in l for l in lines)             # intermedias no se re-agregan
+
+
+def test_has_foreign_text_detects_mixed_bank():
+    from helpers import has_foreign_text
+    en = {"summary": "Engineer with experience in Python",
+          "experiences": [{"bullets": "Built APIs with FastAPI\nTrained five engineers in SQL"}]}
+    assert not has_foreign_text(en, "en")
+    en["projects"] = [{"description": "Desarrolló bot de trading con lógica propia para Telegram"}]
+    assert has_foreign_text(en, "en")
+
+
+def test_demoted_skill_returns_to_original_tier():
+    cv = {"skills": [{"text": "Dominio avanzado: Python, FastAPI"}, {"text": "Familiaridad: Bash"}]}
+    result = {"missing_keywords": [], "suggestions": {"skills": [
+        "Core skills: Python", "Working knowledge: FastAPI", "Exposure to: Bash"]}}
+    lines = sanitize_ai_result(result, cv)["suggestions"]["skills"]
+    assert "FastAPI" in next(l for l in lines if l.startswith("Core skills:"))

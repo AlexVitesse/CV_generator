@@ -72,7 +72,7 @@ def _init_session_state():
             from ai_analyzer import load_ai_config
             from llm_client import DEFAULT_MODELS
             _cfg = load_ai_config()
-            _provider = _cfg.get("provider", "ollama")
+            _provider = _cfg["provider"]
             _api_key = _cfg.get("api_key", "")
             _model = _cfg.get("model") or DEFAULT_MODELS.get(_provider, "")
             # Reconstruir el mapa por proveedor si la config viene en formato antiguo
@@ -87,7 +87,7 @@ def _init_session_state():
             st.session_state[sk.AI_MODEL] = _model
         else:
             st.session_state[sk.AI_PROVIDERS] = {}
-            st.session_state[sk.AI_PROVIDER] = "ollama"
+            st.session_state[sk.AI_PROVIDER] = None  # call_llm usa DEFAULT_PROVIDER
             st.session_state[sk.AI_API_KEY] = ""
             st.session_state[sk.AI_MODEL] = ""
     if sk.ANALYSIS_RESULT not in st.session_state:
