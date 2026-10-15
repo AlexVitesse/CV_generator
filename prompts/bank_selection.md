@@ -13,6 +13,7 @@ El CV DEBE caber en 1 página. Respeta estos límites ESTRICTAMENTE:
 - SKILLS: MÁXIMO 3 líneas (técnica, AI/certs, idiomas/soft).
 - SUMMARIES: exactamente 1.
 - EDUCACIÓN: incluir TODA siempre.
+- CERTIFICACIONES: MÁXIMO 4, las más alineadas con la vacante (cada una es una línea de la página).
 - IMPORTANTE: Contar los IDs seleccionados antes de responder. Si pasas de 7 bullets, ELIMINA los menos relevantes.
 
 ═══ REGLAS DE SELECCIÓN ═══
@@ -35,6 +36,11 @@ El CV DEBE caber en 1 página. Respeta estos límites ESTRICTAMENTE:
      inclusión obligatoria aunque sea corta — descartarla deja el keyword sin evidencia y falla el ATS.
      Combina el ancla de seniority (span de años) con la experiencia que aporta los keywords
      obligatorios únicos; descarta la experiencia REDUNDANTE (la que solo repite keywords ya cubiertos).
+   - MODALIDAD COMO MUST-HAVE: si el JD pide contractor / freelance / autoempleo / self-employed /
+     staff augmentation / trabajo remoto / inglés, eso ES un requisito obligatorio. La experiencia
+     que lo evidencia (ej: un rol con "(Contractor)" en el título, remoto y en inglés) es de
+     inclusión obligatoria aunque sea corta — un rol propio de fundador NO demuestra haber
+     facturado como contractor a un cliente externo.
    - Prioriza bullets con: (a) tecnologías mencionadas en el JD, (b) métricas cuantitativas, \
 (c) verbos de acción fuertes.
    - NUNCA omitas bullets de backend/API/cloud/deploy si la vacante es técnica — son universalmente valiosos.
@@ -45,6 +51,9 @@ El CV DEBE caber en 1 página. Respeta estos límites ESTRICTAMENTE:
    - Si la vacante pide IA/LLMs: prioriza proyectos con RAG, agentes, chatbots.
    - Si la vacante pide backend: prioriza proyectos con APIs, arquitectura, deploy.
    - El proyecto más grande/impresionante del candidato SIEMPRE debería incluirse.
+   - NUNCA selecciones un proyecto que sea el MISMO producto/empresa de una experiencia que ya
+     seleccionaste (mismo nombre, ej. una experiencia "ZAPI" + un proyecto "ZAPI"): aparecería
+     dos veces en la página sin aportar ningún keyword nuevo. Usa esa ranura para otro proyecto.
 
 3. SKILLS — Incluye las skills que contengan tecnologías de la vacante + certificaciones.
    - La línea de idiomas/soft skills SIEMPRE se incluye.
@@ -54,6 +63,11 @@ a menos que la vacante las pida.
 4. SUMMARIES — Selecciona EL summary cuyo título y enfoque más se acerque al puesto de la vacante.
 
 5. EDUCACIÓN — Incluye SIEMPRE toda la educación (todos los IDs de education).
+
+6. CERTIFICACIONES — Selecciona hasta 4, priorizando las del dominio/nube que pide la vacante
+   (ej: una vacante de IA → las de IA/agentes; una de datos → las de data/cloud). Si ninguna
+   aplica al dominio, selecciona igualmente las 2-3 más prestigiosas: nunca dejes el CV sin
+   certificaciones.
 
 ═══ FORMATO DE RESPUESTA ═══
 Responde SOLO con JSON válido, sin markdown:

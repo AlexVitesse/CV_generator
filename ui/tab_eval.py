@@ -34,6 +34,7 @@ def render_eval_tab(d: dict):
                     d, vacancy_text,
                     st.session_state.ai_api_key,
                     st.session_state.ai_model,
+                    provider=st.session_state.get("ai_provider", "ollama"),
                 )
             st.session_state.eval_result = eval_result
         except Exception as e:

@@ -9,3 +9,6 @@ REGLAS:
 4. Si hay vacante, adapta el tono y keywords a esa vacante.
 5. NO inventes experiencia ni años que no existan en el CV.
 6. Máximo 60 palabras. Directo, sin fluff.
+7. DENSIDAD DE KEYWORDS — No repitas la misma tecnología más de una vez en el resumen. Menciona \
+solo el stack CORE (2-4 tecnologías clave); no listes todo el stack. Repetir keywords que ya aparecen \
+en Skills/Proyectos infla la densidad de palabras clave y penaliza el ATS por sobre-optimización.

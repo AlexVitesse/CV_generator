@@ -2,7 +2,6 @@
 Generación de PDF en formato Harvard para el CV Generator.
 """
 
-import os
 import re
 import unicodedata
 from io import BytesIO
@@ -19,8 +18,6 @@ from reportlab.platypus import (
     Table, TableStyle, HRFlowable,
 )
 from reportlab.lib.colors import black
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
 from i18n import LANG
 
@@ -29,26 +26,12 @@ from i18n import LANG
 # CONFIGURACIÓN DE FUENTES
 # ═══════════════════════════════════════════════════════════════
 
-BULLET_CHAR = "\u00b7"  # middle dot: render fiable en Times-Roman/WinAnsi (era "\u2022" = cuadro negro)
+# Vi\u00F1eta: guion est\u00E1ndar. Es 100% ATS-safe (los ATS lo tratan como vi\u00F1eta est\u00E1ndar,
+# no como car\u00E1cter decorativo) y renderiza fiable en Times-Roman sin depender de fuentes
+# externas (antes se usaba "\u00b7"/"\u25CF" que algunos parsers ATS leen como ruido decorativo).
+BULLET_CHAR = "-"
 BULLET_FONT = "Times-Roman"
-BULLET_FONT_SIZE = 10
-
-_DEJAVU_PATHS = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/DejaVuSans.ttf",
-    os.path.expanduser("~/.fonts/DejaVuSans.ttf"),
-    "C:/Windows/Fonts/DejaVuSans.ttf",
-]
-for _p in _DEJAVU_PATHS:
-    if os.path.exists(_p):
-        try:
-            pdfmetrics.registerFont(TTFont("DejaVuSans", _p))
-            BULLET_CHAR = "\u25CF"
-            BULLET_FONT = "DejaVuSans"
-            BULLET_FONT_SIZE = 7
-            break
-        except Exception:
-            pass
+BULLET_FONT_SIZE = 9.5
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -112,13 +95,40 @@ def safe(text: str) -> str:
     return escaped
 
 
+def _norm_url(url: str, kind: str = "url") -> str:
+    """Normaliza un valor de contacto a una URL válida para el atributo href."""
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    if kind == "email":
+        return u if u.lower().startswith("mailto:") else "mailto:" + u
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u
+    return u
+
+
+def link(url: str, display: str, kind: str = "url") -> str:
+    """Devuelve markup de ReportLab para un hipervínculo activo (GitHub, LinkedIn, email,
+    URLs de proyecto). El texto visible se escapa con safe(); el href se escapa aparte.
+    El resultado ya viene escapado — pásalo a Paragraph SIN volver a envolver en safe()."""
+    href = _norm_url(url, kind)
+    if not href:
+        return safe(display)
+    href_attr = xml_escape(href, {'"': "&quot;"})
+    return f'<a href="{href_attr}">{safe(display)}</a>'
+
+
 # ═══════════════════════════════════════════════════════════════
 # GENERACIÓN DE PDF
 # ═══════════════════════════════════════════════════════════════
 
-def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
+def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool, float]:
     """Genera un PDF de CV en formato Harvard, escalando dinámicamente si excede 1 página.
-    Retorna (buffer, cabe_en_1_pagina)."""
+
+    Retorna (buffer, cabe_en_1_pagina, escala_usada). La escala importa: "cupo" a 0.76
+    es un CV al 76% del tamaño de fuente — cabe, pero se lee mal; el caller avisa para
+    que recortes contenido en vez de aceptar letra chica.
+    """
 
     labels = LANG.get(lang, LANG["es"])
 
@@ -186,9 +196,11 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
 
         cw = [aw * 0.65, aw * 0.35]
 
-        def row2(lt, ls, rt, rs):
+        def row2(lt, ls, rt, rs, lt_raw=False, rt_raw=False):
+            left = lt if lt_raw else safe(lt)
+            right = rt if rt_raw else safe(rt)
             tbl = Table(
-                [[Paragraph(safe(lt), ls), Paragraph(safe(rt), rs)]],
+                [[Paragraph(left, ls), Paragraph(right, rs)]],
                 colWidths=cw,
             )
             tbl.setStyle(no_pad)
@@ -206,10 +218,21 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
 
         story.append(Paragraph(safe(data.get("name", "")), s_name))
 
-        contact_fields = ["location", "linkedin", "github", "phone", "email"]
-        parts = [data.get(k, "") for k in contact_fields]
-        contact_str = " \u00b7 ".join(p.strip() for p in parts if p.strip())
-        story.append(Paragraph(safe(contact_str), s_contact))
+        # Contacto: linkedin/github/email como hiperv\u00ednculos activos; location/phone texto.
+        # Cada parte ya viene escapada, as\u00ed que se pasa a Paragraph SIN volver a envolver en safe().
+        contact_parts = []
+        for field in ("location", "linkedin", "github", "phone", "email"):
+            val = str(data.get(field, "") or "").strip()
+            if not val:
+                continue
+            if field in ("linkedin", "github"):
+                contact_parts.append(link(val, val))
+            elif field == "email":
+                contact_parts.append(link(val, val, "email"))
+            else:
+                contact_parts.append(safe(val))
+        if contact_parts:
+            story.append(Paragraph(" \u00b7 ".join(contact_parts), s_contact))
 
         summary = data.get("summary", "").strip()
         if summary:
@@ -259,9 +282,12 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
             ))
             for proj in projects:
                 name = proj.get("name", "")
-                url = proj.get("url", "")
-                title_text = f"{name} — {url}" if url else name
-                story.append(row2(title_text, s_bold_l, "", s_norm_r))
+                url = str(proj.get("url", "") or "").strip()
+                if url:
+                    title_text = f"{safe(name)} — {link(url, url)}"
+                else:
+                    title_text = safe(name)
+                story.append(row2(title_text, s_bold_l, "", s_norm_r, lt_raw=True))
                 desc = proj.get("description", "").strip()
                 if desc:
                     story.append(bullet_para(desc))
@@ -289,6 +315,21 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
                     story.append(Paragraph(safe(details), s_detail))
                 story.append(Spacer(1, 6 * sf))
 
+        # ── CERTIFICACIONES ──────────────────────────────────────
+        certifications = data.get("certifications", [])
+        if certifications:
+            story.append(Paragraph(labels["pdf_certifications"], s_section))
+            story.append(HRFlowable(
+                width="100%", thickness=0.5, color=black,
+                spaceBefore=1 * sf, spaceAfter=4 * sf,
+            ))
+            for cert in certifications:
+                # Sin "text" → "" (NO el dict): str(dict) imprimiría el repr completo,
+                # incluyendo credential_id, que se decidió explícitamente no imprimir.
+                text = cert.get("text", "") if isinstance(cert, dict) else str(cert)
+                if str(text).strip():
+                    story.append(bullet_para(text))
+
         # ── SKILLS ───────────────────────────────────────────────
         skills = data.get("skills", [])
         if skills:
@@ -298,8 +339,8 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
                 spaceBefore=1 * sf, spaceAfter=4 * sf,
             ))
             for sk in skills:
-                text = sk.get("text", sk) if isinstance(sk, dict) else str(sk)
-                if text.strip():
+                text = sk.get("text", "") if isinstance(sk, dict) else str(sk)
+                if str(text).strip():
                     story.append(bullet_para(text))
 
         # Compilar y comprobar número de páginas
@@ -309,12 +350,12 @@ def generate_cv_pdf(data: dict, lang: str = "es") -> tuple[BytesIO, bool]:
             pages = PdfReader(buf).get_num_pages()
             if pages <= 1:
                 buf.seek(0)
-                return buf, True
+                return buf, True, sf
             if sf <= 0.76:
                 buf.seek(0)
-                return buf, False
+                return buf, False, sf
         except Exception:
             if sf <= 0.76:
                 buf.seek(0)
-                return buf, False
+                return buf, False, sf
 

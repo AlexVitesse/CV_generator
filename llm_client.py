@@ -20,6 +20,28 @@ import uuid
 from logging.handlers import RotatingFileHandler
 
 OLLAMA_CLOUD_URL = "https://ollama.com/api/chat"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+# Proveedores de LLM soportados. Ollama es el histórico/por defecto; los demás se
+# añaden sin quitarlo. Todos hablan por HTTP (httpx), sin SDKs extra.
+PROVIDERS = ("ollama", "openai", "anthropic", "gemini")
+PROVIDER_LABELS = {
+    "ollama": "Ollama Cloud",
+    "openai": "OpenAI (ChatGPT)",
+    "anthropic": "Anthropic (Claude)",
+    "gemini": "Google Gemini",
+}
+DEFAULT_MODELS = {
+    "ollama": "gpt-oss:120b-cloud",
+    "anthropic": "claude-opus-4-8",
+    "openai": "gpt-5.1",
+    "gemini": "gemini-2.5-flash",
+}
+# Tope de tokens de salida para los proveedores que lo exigen (Anthropic) o que se
+# benefician de un límite explícito. 16k cubre con holgura un CV/JSON de análisis.
+_MAX_OUTPUT_TOKENS = 16000
 
 try:
     import httpx
@@ -74,8 +96,66 @@ def new_request_id() -> str:
 # PARSING JSON TOLERANTE
 # ═══════════════════════════════════════════════════════════════
 
+def _repair_json(text: str) -> str:
+    """Repara malformaciones estructurales comunes en JSON emitido por LLMs.
+
+    No es un parser completo: cubre los casos que Gemini/gpt-oss producen con
+    más frecuencia y que `json.loads` rechaza —comas finales y comas FALTANTES
+    entre un valor y la siguiente clave/elemento (error «Expecting ',' delimiter»)—
+    sin tocar el contenido de las cadenas. Rastrea si estamos dentro de un string
+    (respetando escapes) para no alterar texto literal.
+    """
+    out = []
+    in_str = False
+    esc = False
+    n = len(text)
+    for i, ch in enumerate(text):
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+
+        if ch == '"' or ch in "{[":
+            # ¿Falta una coma antes de abrir esta cadena/clave/valor? El carácter
+            # previo no vacío debe cerrar un valor anterior: cualquiera salvo los
+            # que ya introducen un valor (`:` `,` `{` `[`). Cubre valores que
+            # terminan en `"`, `}`, `]`, número o literal true/false/null.
+            j = len(out) - 1
+            while j >= 0 and out[j] in " \t\r\n":
+                j -= 1
+            if j >= 0 and out[j] not in ":,{[":
+                out.insert(j + 1, ",")
+            if ch == '"':
+                in_str = True
+            out.append(ch)
+            continue
+
+        if ch in "}]":
+            # Elimina comas finales: «, }» o «, ]».
+            j = len(out) - 1
+            while j >= 0 and out[j] in " \t\r\n":
+                j -= 1
+            if j >= 0 and out[j] == ",":
+                del out[j]
+            out.append(ch)
+            continue
+
+        out.append(ch)
+
+    return "".join(out)
+
+
 def _parse_json_response(raw: str) -> dict:
-    """Parsea la respuesta del modelo tolerando fences de markdown y texto extra."""
+    """Parsea la respuesta del modelo tolerando fences de markdown y texto extra.
+
+    Si el JSON está estructuralmente malformado (coma faltante/sobrante), intenta
+    una reparación conservadora (`_repair_json`) antes de propagar el error.
+    """
     raw = (raw or "").strip()
     if raw.startswith("```"):
         lines = [l for l in raw.split("\n") if not l.strip().startswith("```")]
@@ -84,9 +164,12 @@ def _parse_json_response(raw: str) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError:
         start, end = raw.find("{"), raw.rfind("}")
-        if start != -1 and end > start:
-            return json.loads(raw[start:end + 1])
-        raise
+        candidate = raw[start:end + 1] if (start != -1 and end > start) else raw
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            # Último recurso: reparar comas faltantes/sobrantes fuera de strings.
+            return json.loads(_repair_json(candidate))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -95,6 +178,29 @@ def _parse_json_response(raw: str) -> dict:
 
 class LLMError(RuntimeError):
     """Fallo al llamar al LLM: red, HTTP, o respuesta vacía/no parseable."""
+
+
+def _mk_timeout(timeout: float) -> "httpx.Timeout":
+    """Construye un timeout granular: la fase de conexión falla rápido (DNS caído,
+    host inalcanzable) mientras la lectura tolera generaciones lentas.
+
+    Antes se pasaba un float único: una red intermitente colgaba los `timeout`
+    segundos completos en CADA intento solo para resolver el host. Acotamos el
+    connect a 10s (o menos si el caller pidió un timeout más corto).
+    """
+    return httpx.Timeout(timeout, connect=min(10.0, timeout))
+
+
+def _describe_error(err: Exception) -> str:
+    """Traduce errores de red crípticos en un mensaje accionable para el usuario.
+
+    `getaddrinfo failed` / ConnectError = sin DNS o sin conexión; ConnectTimeout =
+    el host no respondió. El resto se muestra tal cual.
+    """
+    if isinstance(err, (httpx.ConnectError, httpx.ConnectTimeout)) or "getaddrinfo" in str(err):
+        return ("no se pudo conectar (revisa tu conexión a internet, DNS, VPN o "
+                f"proxy/firewall). Detalle: {err}")
+    return str(err)
 
 
 def call_ollama(
@@ -134,7 +240,7 @@ def call_ollama(
                 OLLAMA_CLOUD_URL,
                 headers={"Authorization": f"Bearer {api_key}"},
                 json=payload,
-                timeout=timeout,
+                timeout=_mk_timeout(timeout),
             )
             response.raise_for_status()
             elapsed = time.monotonic() - start
@@ -159,4 +265,293 @@ def call_ollama(
             if attempt < retries:
                 time.sleep(min(2 ** (attempt - 1), 8))
 
-    raise LLMError(f"Ollama falló tras {retries} intentos: {last_err}")
+    raise LLMError(f"Ollama falló tras {retries} intentos: {_describe_error(last_err)}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# DISPATCHER MULTI-PROVEEDOR
+# ═══════════════════════════════════════════════════════════════
+# Contrato compartido con call_ollama: recibe `messages` en formato chat
+# (role/content estilo OpenAI) y devuelve el texto del asistente (str no vacío).
+# `options` usa las llaves de Ollama (temperature/top_p/seed) y cada backend las
+# mapea a lo suyo (o las ignora cuando el modelo no las admite).
+
+
+def _split_system(messages: list) -> tuple[str, list]:
+    """Separa los mensajes `system` (los junta en un solo string) del resto.
+
+    Anthropic y Gemini llevan el system aparte, no como un mensaje más.
+    """
+    system_parts, rest = [], []
+    for m in messages:
+        if m.get("role") == "system":
+            system_parts.append(m.get("content", ""))
+        else:
+            rest.append({"role": m.get("role"), "content": m.get("content", "")})
+    return "\n\n".join(p for p in system_parts if p), rest
+
+
+def _retry(do_call, *, rid: str, provider: str, model: str, retries: int) -> str:
+    """Ejecuta `do_call` con backoff. No reintenta errores 4xx (salvo 429)."""
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            start = time.monotonic()
+            content = do_call()
+            if not content or not content.strip():
+                raise LLMError("respuesta del modelo vacía")
+            logger.info(
+                "call [%s] ok provider=%s model=%s attempt=%d dur=%.1fs len=%d",
+                rid, provider, model, attempt, time.monotonic() - start, len(content),
+            )
+            return content.strip()
+        except httpx.HTTPStatusError as e:
+            last_err = e
+            code = e.response.status_code
+            body = ""
+            try:
+                body = e.response.text[:300]
+            except Exception:
+                pass
+            logger.warning("call [%s] fail provider=%s model=%s attempt=%d/%d http=%s body=%s",
+                           rid, provider, model, attempt, retries, code, body)
+            if 400 <= code < 500 and code != 429:
+                break  # error del cliente (key/model/payload): no tiene sentido reintentar
+        except (httpx.HTTPError, LLMError, json.JSONDecodeError) as e:
+            last_err = e
+            logger.warning("call [%s] fail provider=%s model=%s attempt=%d/%d err=%s",
+                           rid, provider, model, attempt, retries, e)
+        if attempt < retries:
+            time.sleep(min(2 ** (attempt - 1), 8))
+    raise LLMError(f"{PROVIDER_LABELS.get(provider, provider)} falló: {_describe_error(last_err)}")
+
+
+def _call_openai(messages, *, model, api_key, json_mode, options, timeout, rid, retries):
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    opts = options or {}
+
+    def _post(strip_sampling: bool) -> str:
+        body = {"model": model, "messages": messages}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        if not strip_sampling:
+            for key in ("temperature", "top_p", "seed"):
+                if opts.get(key) is not None:
+                    body[key] = opts[key]
+        r = httpx.post(OPENAI_URL, headers=headers, json=body, timeout=_mk_timeout(timeout))
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+    def do_call():
+        try:
+            return _post(strip_sampling=False)
+        except httpx.HTTPStatusError as e:
+            # Los modelos de razonamiento (gpt-5.x) rechazan temperature/top_p≠default.
+            # Reintentar una vez sin parámetros de sampling antes de rendirse.
+            if e.response.status_code == 400 and (opts.get("temperature") is not None
+                                                  or opts.get("top_p") is not None
+                                                  or opts.get("seed") is not None):
+                return _post(strip_sampling=True)
+            raise
+
+    return _retry(do_call, rid=rid, provider="openai", model=model, retries=retries)
+
+
+def _call_anthropic(messages, *, model, api_key, json_mode, options, timeout, rid, retries):
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    system, msgs = _split_system(messages)
+    if json_mode:
+        instruction = "Responde ÚNICAMENTE con JSON válido, sin markdown ni texto adicional."
+        system = f"{system}\n\n{instruction}" if system else instruction
+    # No se envía temperature/top_p/seed: Opus 4.8 los rechaza (HTTP 400).
+    body = {"model": model, "max_tokens": _MAX_OUTPUT_TOKENS, "messages": msgs}
+    if system:
+        body["system"] = system
+
+    def do_call():
+        r = httpx.post(ANTHROPIC_URL, headers=headers, json=body, timeout=_mk_timeout(timeout))
+        r.raise_for_status()
+        data = r.json()
+        if data.get("stop_reason") == "refusal":
+            raise LLMError("Anthropic rechazó la solicitud (refusal)")
+        return "".join(
+            b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+        )
+
+    return _retry(do_call, rid=rid, provider="anthropic", model=model, retries=retries)
+
+
+def _call_gemini(messages, *, model, api_key, json_mode, options, timeout, rid, retries):
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    system, msgs = _split_system(messages)
+    contents = [
+        {"role": "user" if m["role"] == "user" else "model",
+         "parts": [{"text": m["content"]}]}
+        for m in msgs
+    ]
+    opts = options or {}
+    # `maxOutputTokens` es obligatorio aquí en la práctica: los modelos Flash son
+    # "thinking" y, sin tope de salida, gastan el presupuesto en tokens de
+    # pensamiento → el candidato vuelve con finishReason=MAX_TOKENS y SIN `parts`
+    # (respuesta vacía) o la petición se cuelga (visto en logs: read timeout 3×180s).
+    base_gen = {"maxOutputTokens": _MAX_OUTPUT_TOKENS}
+    if opts.get("temperature") is not None:
+        base_gen["temperature"] = opts["temperature"]
+    if opts.get("top_p") is not None:
+        base_gen["topP"] = opts["top_p"]
+    if opts.get("seed") is not None:
+        # `seed` reduce la varianza del scorer (Flash es bimodal: mismo CV → 78/48).
+        # Soportado en generationConfig; si un modelo lo rechaza, el fallback de 400
+        # lo elimina junto con thinkingConfig.
+        base_gen["seed"] = opts["seed"]
+    if json_mode:
+        base_gen["responseMimeType"] = "application/json"
+    url = GEMINI_URL.format(model=model)
+
+    def _post(reduced: bool) -> str:
+        gen = dict(base_gen)
+        if reduced:
+            # Modo defensivo tras un 400: quita los campos que algún modelo/endpoint
+            # podría no admitir, dejando solo lo universalmente soportado.
+            gen.pop("seed", None)
+        else:
+            # Apagar el "thinking" vuelve a Flash rápido y estable para extracción
+            # JSON (no es una tarea de razonamiento). Elimina la latencia que dispara
+            # los read-timeouts y el modo de fallo de respuesta vacía por MAX_TOKENS.
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        body = {"contents": contents, "generationConfig": gen}
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        r = httpx.post(url, headers=headers, json=body, timeout=_mk_timeout(timeout))
+        r.raise_for_status()
+        data = r.json()
+        # Bloqueo de seguridad a nivel de prompt: no hay candidates, error claro.
+        block = (data.get("promptFeedback") or {}).get("blockReason")
+        if block:
+            raise LLMError(f"Gemini bloqueó el prompt (blockReason={block})")
+        cands = data.get("candidates") or []
+        if not cands:
+            raise LLMError("Gemini no devolvió candidates")
+        cand = cands[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts)
+        if not text.strip():
+            # finishReason explica el porqué (MAX_TOKENS, SAFETY, RECITATION…) en
+            # vez del genérico "respuesta vacía" que no orienta el diagnóstico.
+            reason = cand.get("finishReason") or "desconocido"
+            raise LLMError(f"Gemini devolvió respuesta vacía (finishReason={reason})")
+        return text
+
+    def do_call():
+        try:
+            return _post(reduced=False)
+        except httpx.HTTPStatusError as e:
+            # Si el modelo/endpoint no admite thinkingConfig/seed (400), reintentar una
+            # vez sin esos campos (mismo patrón que el strip-sampling de OpenAI).
+            if e.response.status_code == 400:
+                return _post(reduced=True)
+            raise
+
+    return _retry(do_call, rid=rid, provider="gemini", model=model, retries=retries)
+
+
+def call_gemini_vision(
+    image_bytes: bytes,
+    mime_type: str,
+    prompt: str,
+    *,
+    api_key: str,
+    model: str,
+    timeout: float = 90.0,
+    retries: int = 2,
+    request_id: str | None = None,
+) -> str:
+    """OCR/transcripción de una imagen vía Gemini (`inlineData`), fuera del dispatcher
+    de texto porque ningún otro proveedor soportado aquí recibe imágenes.
+
+    Devuelve el texto extraído (str no vacío). Lanza `LLMError` en bloqueo de
+    seguridad, respuesta vacía o si el modelo no admite input multimodal.
+    """
+    if not HTTPX_AVAILABLE:
+        raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
+    if not api_key:
+        raise ValueError("Se requiere API key de Google Gemini")
+
+    import base64
+    rid = request_id or new_request_id()
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    url = GEMINI_URL.format(model=model)
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    parts = [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": b64}}]
+
+    def _post(reduced: bool) -> str:
+        gen = {"maxOutputTokens": _MAX_OUTPUT_TOKENS, "temperature": 0}
+        if not reduced:
+            gen["thinkingConfig"] = {"thinkingBudget": 0}
+        body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": gen}
+        r = httpx.post(url, headers=headers, json=body, timeout=_mk_timeout(timeout))
+        r.raise_for_status()
+        data = r.json()
+        block = (data.get("promptFeedback") or {}).get("blockReason")
+        if block:
+            raise LLMError(f"Gemini bloqueó la imagen (blockReason={block})")
+        cands = data.get("candidates") or []
+        if not cands:
+            raise LLMError("Gemini no devolvió candidates")
+        cand = cands[0]
+        cand_parts = (cand.get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in cand_parts)
+        if not text.strip():
+            reason = cand.get("finishReason") or "desconocido"
+            raise LLMError(f"Gemini devolvió respuesta vacía (finishReason={reason})")
+        return text
+
+    def do_call():
+        try:
+            return _post(reduced=False)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                return _post(reduced=True)
+            raise
+
+    return _retry(do_call, rid=rid, provider="gemini", model=model, retries=retries)
+
+
+def call_llm(
+    messages: list,
+    *,
+    provider: str,
+    model: str,
+    api_key: str,
+    json_mode: bool = False,
+    options: dict | None = None,
+    timeout: float = 180.0,
+    retries: int = 3,
+    request_id: str | None = None,
+) -> str:
+    """Llama al proveedor indicado y devuelve el texto del asistente (str no vacío).
+
+    Enruta a Ollama (por defecto), OpenAI, Anthropic o Gemini. Mismo contrato que
+    `call_ollama` para no tocar el resto del pipeline (los callers siguen parseando
+    con `_parse_json_response`).
+    """
+    if not HTTPX_AVAILABLE:
+        raise RuntimeError("httpx no instalado. Ejecuta: pip install httpx")
+    p = (provider or "ollama").lower()
+    if not api_key:
+        raise ValueError(f"Se requiere API key de {PROVIDER_LABELS.get(p, p)}")
+    rid = request_id or new_request_id()
+
+    if p == "ollama":
+        return call_ollama(messages, model=model, api_key=api_key, json_mode=json_mode,
+                           options=options, timeout=timeout, retries=retries, request_id=rid)
+    backend = {"openai": _call_openai, "anthropic": _call_anthropic, "gemini": _call_gemini}.get(p)
+    if backend is None:
+        raise ValueError(f"Proveedor de LLM no soportado: {provider}")
+    return backend(messages, model=model, api_key=api_key, json_mode=json_mode,
+                   options=options, timeout=timeout, rid=rid, retries=retries)

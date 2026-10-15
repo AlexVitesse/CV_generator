@@ -256,6 +256,17 @@ def bank_to_active_cv(banco: dict) -> dict:
             "date": edu.get("date", ""),
         })
 
+    # Certifications: activas por defecto (como educación) — siempre relevantes.
+    cv["certifications"] = []
+    for cert in banco.get("certifications", []):
+        if not cert.get("active", True):
+            continue
+        cv["certifications"].append({
+            "id": cert["id"],
+            "text": cert.get("text", ""),
+            "credential_id": cert.get("credential_id", ""),
+        })
+
     # Skills: solo activas
     cv["skills"] = []
     for sk in banco.get("skills", []):
@@ -312,6 +323,16 @@ def get_bank_manifest(banco: dict) -> list[dict]:
             "tags": [],
         })
 
+    # Las certificaciones también compiten por el espacio de la página: si no entran
+    # al manifiesto, se imprimen TODAS en toda vacante (6-7 líneas fijas) y obligan
+    # al PDF a encoger la fuente para caber.
+    for cert in banco.get("certifications", []):
+        manifest.append({
+            "id": cert["id"], "type": "certification",
+            "text": cert.get("text", "")[:150],
+            "tags": ["certs"],
+        })
+
     for sk in banco.get("skills", []):
         manifest.append({
             "id": sk["id"], "type": "skill",
@@ -346,9 +367,16 @@ def apply_ai_selection(banco: dict, selected_ids: list[str]) -> dict:
     for proj in banco.get("projects", []):
         proj["active"] = proj["id"] in selected
 
-    # Educación: activa por defecto si no se especifica
+    # Educación: SIEMPRE activa (el prompt la pide completa en todas las vacantes).
     for edu in banco.get("education", []):
-        edu["active"] = edu["id"] in selected if edu["id"] in selected else True
+        edu["active"] = True
+
+    # Certificaciones: solo si el modelo eligió al menos una (fail-open: un modelo que
+    # las ignore deja el comportamiento anterior de imprimirlas todas).
+    certs = banco.get("certifications", [])
+    if any(c["id"] in selected for c in certs):
+        for c in certs:
+            c["active"] = c["id"] in selected
 
     for sk in banco.get("skills", []):
         sk["active"] = sk["id"] in selected
@@ -492,6 +520,21 @@ def merge_cv_to_bank(cv: dict, banco: dict) -> None:
         bank_edu["details"] = cv_edu.get("details", bank_edu["details"])
         bank_edu["location"] = cv_edu.get("location", bank_edu["location"])
         bank_edu["date"] = cv_edu.get("date", bank_edu["date"])
+
+    # ── Certifications: emparejar por id ──
+    bank_certs_by_id = {c["id"]: c for c in banco.get("certifications", []) if "id" in c}
+    for cv_cert in cv.get("certifications", []):
+        bank_cert = bank_certs_by_id.get(cv_cert.get("id"))
+        if bank_cert is None:
+            banco.setdefault("certifications", []).append({
+                "id": cv_cert.get("id") or generate_bank_id("cert"),
+                "text": cv_cert.get("text", ""),
+                "credential_id": cv_cert.get("credential_id", ""),
+                "active": True,
+            })
+            continue
+        bank_cert["text"] = cv_cert.get("text", bank_cert["text"])
+        bank_cert["credential_id"] = cv_cert.get("credential_id", bank_cert.get("credential_id", ""))
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -10,6 +10,10 @@ import streamlit as st
 
 from helpers import uid, sync_widgets_to_data
 from i18n import t
+from llm_client import get_logger
+from metrics_guard import resolve_target_index
+
+logger = get_logger("diff_viewer")
 
 
 def _html_word_diff(before: str, after: str) -> str:
@@ -44,32 +48,52 @@ def _html_word_diff(before: str, after: str) -> str:
     )
 
 
-def _collect_suggestion_changes(d: dict, suggestions: dict) -> list:
+def _collect_suggestion_changes(d: dict, suggestions: dict) -> tuple[list, list]:
     """Construye la lista de cambios sugeridos no triviales (after != before).
 
-    Cada cambio: {key, kind, index, label, before, after}.
+    Devuelve (changes, dropped). Cada cambio: {key, kind, index, label, before, after}.
+    `dropped` son las sugerencias que apuntan a ítems que ya NO están en el CV
+    (el análisis corre contra el banco completo y la selección de 1 página poda
+    después): antes se perdían en silencio, con solo un WARNING en el log.
     """
     changes = []
+    dropped = []
+    seen_keys = set()
 
     def _add(key, kind, index, label, before, after):
         before = (before or "").strip()
         after = (after or "").strip()
-        if after and after != before:
-            changes.append({
-                "key": key, "kind": kind, "index": index,
-                "label": label, "before": before, "after": after,
-            })
+        if not after or after == before:
+            return
+        # Dos sugerencias del modelo pueden resolver al MISMO ítem (mismo idx →
+        # misma key). Streamlit exige keys únicas, y aplicar ambas escribiría dos
+        # veces el mismo campo. Conservamos la primera y descartamos la colisión.
+        if key in seen_keys:
+            logger.warning("DIFF descarta sugerencia duplicada para el mismo destino "
+                           "(key=%s, kind=%s)", key, kind)
+            return
+        seen_keys.add(key)
+        changes.append({
+            "key": key, "kind": kind, "index": index,
+            "label": label, "before": before, "after": after,
+        })
 
     # Resumen
     if suggestions.get("summary"):
         _add("summary", "summary", None, t("diff_field_summary"),
              d.get("summary", ""), suggestions["summary"])
 
-    # Experiencias (título + bullets)
+    # Experiencias (título + bullets). El índice se resuelve por id/contenido
+    # (no por el "index" crudo del modelo) para no mal-asignar bullets a otra empresa.
     exps = d.get("experiences", [])
     for exp_sug in suggestions.get("experiences", []):
-        idx = exp_sug.get("index", 0)
-        cur = exps[idx] if 0 <= idx < len(exps) else {}
+        idx = resolve_target_index(exp_sug, exps, kind="experience")
+        if idx is None:
+            logger.warning("DIFF descarta sugerencia de experiencia sin match confiable "
+                           "(id=%s, title=%s)", exp_sug.get("id"), exp_sug.get("title"))
+            dropped.append(exp_sug.get("title") or exp_sug.get("id") or "?")
+            continue
+        cur = exps[idx]
         if exp_sug.get("title"):
             _add(f"exptitle_{idx}", "exp_title", idx,
                  t("diff_field_exp_title").format(idx),
@@ -82,8 +106,13 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> list:
     # Proyectos
     projs = d.get("projects", [])
     for proj_sug in suggestions.get("projects", []):
-        idx = proj_sug.get("index", 0)
-        cur = projs[idx] if 0 <= idx < len(projs) else {}
+        idx = resolve_target_index(proj_sug, projs, kind="project")
+        if idx is None:
+            logger.warning("DIFF descarta sugerencia de proyecto sin match confiable (id=%s)",
+                           proj_sug.get("id"))
+            dropped.append(proj_sug.get("name") or proj_sug.get("id") or "?")
+            continue
+        cur = projs[idx]
         if proj_sug.get("description"):
             _add(f"proj_{idx}", "proj_desc", idx,
                  t("diff_field_proj").format(idx),
@@ -96,7 +125,28 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> list:
         before = " | ".join(sk.get("text", "") for sk in d.get("skills", []))
         _add("skills", "skills", None, t("diff_field_skills"), before, after)
 
-    return changes
+    return changes, dropped
+
+
+def merge_skill_line(old_skills: list, value: str) -> list:
+    """Sustituye las líneas de skills técnicas por la línea sugerida `value`.
+
+    Conserva las líneas de certificaciones/idiomas (ahí vive evidencia de must-haves
+    como "English proficiency") y REUSA el id de la primera línea técnica: con un
+    `uid()` nuevo, `merge_cv_to_bank` no encuentra la skill en el banco y la AGREGA
+    como línea suelta en cada "Guardar CV al banco" (así entraron `2a963b4b` y
+    `d8c53127`). Función pura para poder testearla sin Streamlit.
+    """
+    preserved, replaced_id = [], None
+    for sk in old_skills:
+        txt = sk.get("text", "")
+        low = txt.lower()
+        if "cert" in low or "idioma" in low or "language" in low:
+            if txt.strip() not in value:
+                preserved.append(sk)
+        elif replaced_id is None:
+            replaced_id = sk.get("id")
+    return [{"id": replaced_id or uid(), "text": value.strip()}] + preserved
 
 
 def _apply_selected_changes(d: dict, changes: list) -> int:
@@ -128,14 +178,7 @@ def _apply_selected_changes(d: dict, changes: list) -> int:
             # La sugerencia es una sola línea de skills TÉCNICAS (formato tech-tier), que no
             # incluye certificaciones ni la línea de idiomas/soft skills. Preservamos ambas para
             # no perder evidencia de must-haves (ej: "English proficiency" vive en "Idiomas:").
-            new_skills = [{"id": uid(), "text": value.strip()}]
-            for sk in d.get("skills", []):
-                txt = sk.get("text", "")
-                low = txt.lower()
-                preserve = "cert" in low or "idioma" in low or "language" in low
-                if preserve and txt.strip() not in value:
-                    new_skills.append(sk)
-            d["skills"] = new_skills
+            d["skills"] = merge_skill_line(d.get("skills", []), value)
             applied += 1
 
     return applied
@@ -148,12 +191,16 @@ def render_suggestions_diff(d: dict, result: dict):
     if not suggestions:
         return
 
-    changes = _collect_suggestion_changes(d, suggestions)
-    if not changes:
+    changes, dropped = _collect_suggestion_changes(d, suggestions)
+    if not changes and not dropped:
         return
 
     st.divider()
     st.subheader(t("vacancy_suggestions"))
+    if dropped:
+        st.info(t("diff_dropped_orphans").format(len(dropped), ", ".join(dropped[:3])))
+    if not changes:
+        return
     st.caption(t("diff_intro"))
     st.caption(t("diff_legend"))
 

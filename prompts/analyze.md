@@ -114,6 +114,14 @@ porque es un hecho implícito (RunPod usa Docker).
      (ej: la experiencia habla de arquitectura, stack y deploy; el proyecto, de resultados e impacto).
    - Antes de responder, REVISA que ninguna cifra se repita entre summary, bullets and proyectos.
 
+8. DENSIDAD DE KEYWORDS — ANTI-SOBRE-OPTIMIZACIÓN — Cada tecnología aparece donde aporta EVIDENCIA real,
+   NO en todas las secciones a la vez:
+   - MAL: repetir "FastAPI", "RAG", "Python" en summary + 4 bullets + proyecto + skills. Eso dispara la
+     densidad de palabras clave por encima del ~12% y el ATS lo penaliza como keyword-stuffing.
+   - BIEN: menciona cada keyword las veces MÍNIMAS necesarias para evidenciar el requisito. La lista
+     completa del stack vive en Skills; en bullets y summary usa la tecnología solo donde describe un logro real.
+   - El espejo de vocabulario (más abajo) NO es licencia para repetir: sustituye la etiqueta, no la multipliques.
+
 ═══ ESTRATEGIA DE ADAPTACIÓN ═══
 
 1. ESPEJO DE VOCABULARIO (MÁXIMO IMPACTO ATS) — Usa EXACTAMENTE la terminología del JD:
@@ -144,8 +152,11 @@ IDIOMA — REGLA FUNDAMENTAL:
 - Si la vacante está en inglés: TODO en inglés, incluso si el CV original está en español.
 - Si la vacante está en español: TODO en español.
 - CERO mezcla de idiomas. Revisa cada campo — UNA palabra en el idioma incorrecto es un error.
-- Skills en inglés: "Core skills: ... | Working knowledge: ... | Exposure to: ..."
-- Skills en español: "Dominio avanzado: ... | Dominio intermedio: ... | Familiaridad: ..."
+- Skills AGRUPADAS EN LÍNEAS SEPARADAS (una por tier) para que sean escaneables — NO en una sola línea larga.
+  Devuelve el campo "skills" como un ARRAY con UN elemento por tier:
+  - En inglés: ["Core skills: ...", "Working knowledge: ...", "Exposure to: ..."]
+  - En español: ["Dominio avanzado: ...", "Dominio intermedio: ...", "Familiaridad: ..."]
+- Mantén el prefijo de tier al inicio de cada línea (es lo que el sistema usa para preservar los niveles).
 
 ██ REGLA ANTI-PARÉNTESIS (PRIORIDAD MÁXIMA) ██
 - NUNCA pongas paréntesis explicativos/justificativos en NINGÚN campo del CV (summary, bullets, skills).
@@ -181,11 +192,12 @@ Summary:
 "Software EngineerBackend" es INCORRECTO → "Software Engineer — Backend" es CORRECTO.
 
 Skills — REGLA CRÍTICA:
-- CONSERVA TODAS las skills y certificaciones existentes. NUNCA elimines ninguna.
-- Certificaciones (AWS, OCI, etc.) SIEMPRE deben aparecer.
-- Labels según idioma del CV:
-  - Español: "Dominio avanzado: ... | Dominio intermedio: ... | Familiaridad: ..."
-  - English: "Core skills: ... | Working knowledge: ... | Exposure to: ..."
+- CONSERVA TODAS las skills existentes. NUNCA elimines ninguna.
+- Las certificaciones (AWS, OCI, etc.) viven en su PROPIA sección (campo "certifications" del CV) y se
+  preservan automáticamente — NO las metas en la línea de skills ni las dupliques ahí.
+- Devuelve "skills" como ARRAY con UNA línea por tier (escaneable), NO una sola línea larga con "|":
+  - Español: ["Dominio avanzado: ...", "Dominio intermedio: ...", "Familiaridad: ..."]
+  - English: ["Core skills: ...", "Working knowledge: ...", "Exposure to: ..."]
 - Usa SIEMPRE "AI/ML" (nunca "IA/ML" en CV en inglés).
 - REORDENA poniendo primero las skills relevantes al JD, sin eliminar las demás y SIN cambiarlas de tier (regla 6).
 - Los labels de los tiers van en el idioma de la VACANTE, aunque el CV original use otros labels.
@@ -199,6 +211,12 @@ missing_keywords:
 - Sé brutalmente honesto — el candidato necesita saber si vale la pena aplicar.
 
 ═══ FORMATO DE RESPUESTA ═══
+- ██ ANCLA POR ID (CRÍTICO — INTEGRIDAD DE DATOS) ██ Cada sugerencia de experiencia y de
+  proyecto DEBE incluir el campo "id" con el VALOR EXACTO del "id" de ESA misma empresa/proyecto
+  tal como aparece en el CV JSON (experiences[].id, projects[].id). El "id" identifica a qué
+  empresa/proyecto pertenecen los bullets — NUNCA lo inventes, lo cambies ni lo reutilices de otro
+  ítem. Si reordenas las experiencias por relevancia, el "id" debe seguir apuntando a la empresa
+  dueña de esos bullets: los bullets de la empresa X van con el id de X, jamás con el de otra.
 - Responde SOLO con JSON válido, sin markdown ni texto adicional.
 - El campo "reasoning" DEBE estar 100% en español. NUNCA mezcles otros idiomas.
 - NO uses caracteres de otros alfabetos (chino, japonés, etc.) en ningún campo.

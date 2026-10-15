@@ -69,11 +69,25 @@ def _init_session_state():
         st.session_state[sk.CONTENT_LANG] = "es"
     if sk.AI_API_KEY not in st.session_state:
         if AI_AVAILABLE:
-            from ai_analyzer import load_ai_config, DEFAULT_MODEL
+            from ai_analyzer import load_ai_config
+            from llm_client import DEFAULT_MODELS
             _cfg = load_ai_config()
-            st.session_state[sk.AI_API_KEY] = _cfg.get("api_key", "")
-            st.session_state[sk.AI_MODEL] = _cfg.get("model", DEFAULT_MODEL)
+            _provider = _cfg.get("provider", "ollama")
+            _api_key = _cfg.get("api_key", "")
+            _model = _cfg.get("model") or DEFAULT_MODELS.get(_provider, "")
+            # Reconstruir el mapa por proveedor si la config viene en formato antiguo
+            # (sin "providers"), p.ej. tras un hot-reload con el módulo cacheado.
+            _providers = _cfg.get("providers")
+            if not _providers:
+                _providers = {p: {"api_key": "", "model": m} for p, m in DEFAULT_MODELS.items()}
+                _providers[_provider] = {"api_key": _api_key, "model": _model}
+            st.session_state[sk.AI_PROVIDERS] = _providers
+            st.session_state[sk.AI_PROVIDER] = _provider
+            st.session_state[sk.AI_API_KEY] = _api_key
+            st.session_state[sk.AI_MODEL] = _model
         else:
+            st.session_state[sk.AI_PROVIDERS] = {}
+            st.session_state[sk.AI_PROVIDER] = "ollama"
             st.session_state[sk.AI_API_KEY] = ""
             st.session_state[sk.AI_MODEL] = ""
     if sk.ANALYSIS_RESULT not in st.session_state:

@@ -64,6 +64,10 @@ def _bank():
             {"id": "sk_1", "text": "Python", "tags": [], "active": True},
             {"id": "sk_2", "text": "Rust", "tags": [], "active": True},
         ],
+        "certifications": [
+            {"id": "cert_1", "text": "AWS Certified", "active": True},
+            {"id": "cert_2", "text": "Oracle AI Foundations", "active": True},
+        ],
     }
 
 
@@ -208,6 +212,34 @@ def test_count_bank_items():
     # 1 summary + 3 exps + (2+1+1) bullets + 2 projects + 1 edu + 2 skills
     assert active == total
     assert total == 1 + 3 + 4 + 2 + 1 + 2
+
+
+# ── Certificaciones: ahora compiten por el espacio de la página ──
+
+def test_certifications_are_in_the_manifest():
+    from banco import get_bank_manifest
+    ids = {it["id"] for it in get_bank_manifest(_bank()) if it["type"] == "certification"}
+    assert ids == {"cert_1", "cert_2"}
+
+
+def test_selection_filters_certifications():
+    bank = _bank()
+    apply_ai_selection(bank, ["exp_a", "cert_2"])
+    active = [c["id"] for c in bank["certifications"] if c["active"]]
+    assert active == ["cert_2"]
+
+
+def test_selection_without_certs_keeps_them_all():
+    # Fail-open: un modelo que ignore las certificaciones no debe borrarlas del CV.
+    bank = _bank()
+    apply_ai_selection(bank, ["exp_a"])
+    assert all(c["active"] for c in bank["certifications"])
+
+
+def test_education_always_active_even_if_unselected():
+    bank = _bank()
+    apply_ai_selection(bank, ["exp_a"])
+    assert bank["education"][0]["active"] is True
 
 
 def test_bank_to_active_cv_filters_inactive():

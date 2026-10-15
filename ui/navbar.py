@@ -67,6 +67,7 @@ def render_score_navbar(d: dict):
                             st.session_state.ai_api_key,
                             st.session_state.ai_model,
                             extra_context=extra_context,
+                            provider=st.session_state.get("ai_provider", "ollama"),
                         )
                     st.session_state.analysis_result = sanitize_ai_result(new_result, d)
                     st.rerun()

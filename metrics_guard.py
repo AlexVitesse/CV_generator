@@ -91,12 +91,118 @@ def _whole_cv_keys(cv_data: dict) -> set[str]:
     return _source_keys(*parts)
 
 
+# ═══════════════════════════════════════════════════════════════
+# RESOLUCIÓN DE SUGERENCIA → ÍTEM DE ORIGEN (anti-misatribución)
+# ═══════════════════════════════════════════════════════════════
+# El modelo numera "index" según SU ranking de relevancia, no la posición del
+# array d["experiences"]/d["projects"]; además a veces no devuelve nada estable.
+# Anclar por "id" (que el modelo VE en el CV JSON) evita que un bullet de una
+# empresa aterrice bajo otra. Si falta el id, se usa la proveniencia de contenido
+# (solapamiento de tokens discriminantes como FastAPI, Oracle, ESP32, RunPod...,
+# que sobreviven a la reescritura y a la traducción). Si nada es confiable → None
+# (descartar es más seguro que mal-asignar). NUNCA se confía en "index".
+
+_TOKEN_RE = re.compile(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9+#./]+")
+_STOP = frozenset(
+    "de la el en y a los las con para por una uno del al que se su sus como mas más "
+    "the and of to in for with an at on by from as is are was were be this that".split()
+)
+_MIN_OVERLAP = 0.12   # solapamiento mínimo para confiar en el match por contenido
+_MARGIN = 0.06        # ventaja mínima sobre el segundo mejor (evita ambigüedad)
+
+
+def _content_tokens(text) -> set[str]:
+    """Tokens discriminantes de un texto: alfanuméricos de 3+ chars, sin stopwords."""
+    toks = set()
+    for m in _TOKEN_RE.finditer(_as_text(text).lower()):
+        t = m.group()
+        if len(t) >= 3 and t not in _STOP:
+            toks.add(t)
+    return toks
+
+
+def resolve_target_index(
+    suggestion: dict, items: list, *, kind: str, fallback: str = "content",
+) -> int | None:
+    """Mapea una sugerencia de la IA al ítem de origen correcto.
+
+    `kind`: "experience" o "project". Siempre intenta primero anclar por `id`.
+    `fallback` decide qué hacer cuando no hay id (o no matchea):
+    - "content" (default): proveniencia de contenido — ¿a qué ítem pertenece de verdad?
+      Es lo correcto para APLICAR la sugerencia (diff_viewer): evita mal-asignar.
+    - "index": usa el `index` crudo del modelo (el ítem que el modelo PRETENDÍA).
+      Es lo correcto para el guard anti-fabricación de métricas: si el modelo dice
+      "esto es de ZAPI" y mete una cifra de Cóndor, hay que detectar el trasplante,
+      no re-resolver hacia Cóndor y darlo por bueno.
+
+    Devuelve el índice en `items` o None si no se puede resolver con confianza
+    (el caller debe descartar, NO caer a items[0]).
+    """
+    if not items:
+        return None
+
+    # 1) Ancla por id (el modelo ve el id en el CV JSON).
+    sid = suggestion.get("id")
+    if sid:
+        for i, it in enumerate(items):
+            if isinstance(it, dict) and it.get("id") == sid:
+                return i
+
+    # Fallback por índice crudo del modelo (intención declarada).
+    def _by_index():
+        idx = suggestion.get("index")
+        if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(items):
+            return idx
+        return None
+
+    # Fallback por proveniencia de contenido. Solo los bullets/description (la señal
+    # discriminante real: FastAPI, ESP32, CASA Tier 2...); el título adaptado es genérico
+    # ("AI Engineer", "Backend") y solo mete ruido.
+    def _by_content():
+        if kind == "experience":
+            sug_text = _as_text(suggestion.get("bullets"))
+            src_fn = _exp_source_text
+        else:
+            sug_text = _as_text(suggestion.get("description"))
+            src_fn = _proj_source_text
+        sug_tokens = _content_tokens(sug_text)
+        if not sug_tokens:
+            return None
+        scored = sorted(
+            (
+                (len(sug_tokens & _content_tokens(src_fn(it))) / len(sug_tokens), i)
+                for i, it in enumerate(items)
+                if isinstance(it, dict)
+            ),
+            reverse=True,
+        )
+        if not scored:
+            return None
+        best = scored[0]
+        second = scored[1] if len(scored) > 1 else (0.0, -1)
+        if best[0] >= _MIN_OVERLAP and (best[0] - second[0]) >= _MARGIN:
+            return best[1]
+        return None
+
+    # Encadena AMBOS fallbacks (no se detiene tras el primero) para que el prompt nuevo,
+    # que ya no emite "index", no deje sugerencias sin resolver. `fallback` solo fija la
+    # PRIORIDAD: el guard de métricas prefiere el index declarado (detecta trasplantes);
+    # el diff viewer prefiere el contenido (aplica al ítem correcto).
+    order = (_by_index, _by_content) if fallback == "index" else (_by_content, _by_index)
+    for fn in order:
+        r = fn()
+        if r is not None:
+            return r
+    return None
+
+
 def find_fabricated_metrics(suggestions: dict, cv_data: dict) -> list[dict]:
     """Devuelve las métricas sugeridas sin respaldo en su ítem de origen.
 
     Cada hallazgo: {"kind", "index", "title", "metric", "snippet"}.
-    - experiences/projects: la evidencia es el MISMO ítem (por index) → detecta
-      trasplantes entre ítems aunque el número exista en otra parte del CV.
+    - experiences/projects: la evidencia es el MISMO ítem (resuelto por id/contenido,
+      no por el index crudo del modelo) → detecta trasplantes entre ítems aunque el
+      número exista en otra parte del CV.
     - summary: se compara contra TODO el CV (es transversal por naturaleza).
     """
     offenders = []
@@ -104,8 +210,8 @@ def find_fabricated_metrics(suggestions: dict, cv_data: dict) -> list[dict]:
     projs = cv_data.get("projects", [])
 
     for sug in suggestions.get("experiences", []) or []:
-        idx = sug.get("index")
-        if not isinstance(idx, int) or not (0 <= idx < len(exps)):
+        idx = resolve_target_index(sug, exps, kind="experience", fallback="index")
+        if idx is None:
             continue
         src_keys = _source_keys(_exp_source_text(exps[idx]))
         for met in extract_metrics(sug.get("bullets", "")):
@@ -117,8 +223,8 @@ def find_fabricated_metrics(suggestions: dict, cv_data: dict) -> list[dict]:
                 })
 
     for sug in suggestions.get("projects", []) or []:
-        idx = sug.get("index")
-        if not isinstance(idx, int) or not (0 <= idx < len(projs)):
+        idx = resolve_target_index(sug, projs, kind="project", fallback="index")
+        if idx is None:
             continue
         src_keys = _source_keys(_proj_source_text(projs[idx]))
         for met in extract_metrics(sug.get("description", "")):

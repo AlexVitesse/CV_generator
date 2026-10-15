@@ -11,6 +11,7 @@ import streamlit as st
 from helpers import sync_widgets_to_data, push_data_to_widgets, sanitize_ai_result
 from i18n import t
 from ai_analyzer import AI_AVAILABLE
+from llm_client import LLMError
 
 logger = logging.getLogger("ui")
 
@@ -27,6 +28,37 @@ def render_analysis_tab(d: dict):
     if st.session_state.get(sk.CV_ADAPTED):
         st.success(t("vacancy_applied"))
         del st.session_state[sk.CV_ADAPTED]
+
+    # ── OCR de vacante desde imagen (Gemini Vision) ──────────
+    # Se procesa ANTES del text_area con key=sk.VACANCY_TEXT: Streamlit no permite
+    # mutar el session_state de un widget ya instanciado en el mismo run.
+    gemini_cfg = st.session_state.get(sk.AI_PROVIDERS, {}).get("gemini") or {}
+    gemini_key = gemini_cfg.get("api_key", "")
+    gemini_model = gemini_cfg.get("model") or "gemini-2.5-flash"
+
+    uploaded_image = st.file_uploader(
+        t("vacancy_ocr_uploader"),
+        type=["png", "jpg", "jpeg", "webp"],
+        key=sk.VACANCY_IMAGE_UPLOADER,
+    )
+    if not gemini_key:
+        st.caption(t("vacancy_ocr_no_key"))
+    if st.button(t("vacancy_ocr_button"), disabled=not (gemini_key and uploaded_image)):
+        try:
+            from ai_analyzer import extract_vacancy_text_from_image
+            with st.spinner(t("vacancy_ocr_running")):
+                extracted = extract_vacancy_text_from_image(
+                    uploaded_image.getvalue(),
+                    uploaded_image.type or "image/png",
+                    gemini_key,
+                    gemini_model,
+                )
+            st.session_state[sk.VACANCY_TEXT] = extracted
+            st.toast(t("vacancy_ocr_success"))
+            st.rerun()
+        except (LLMError, ValueError, RuntimeError) as e:
+            logger.exception("OCR vacancy image error")
+            st.error(t("vacancy_ocr_error").format(str(e)))
 
     vacancy_text = st.text_area(
         t("vacancy_placeholder"),
@@ -48,16 +80,21 @@ def render_analysis_tab(d: dict):
                 banco = st.session_state.get(sk.BANCO)
                 d_full = d
                 if banco and banco.get("experiences"):
+                    import copy
                     from banco import bank_to_active_cv as _b2cv
                     from banco import toggle_all as _toggle_all, save_banco
-                    _toggle_all(banco, True)
-                    d_full = _b2cv(banco)
+                    # Sobre una COPIA: si analyze_vacancy falla, la selección curada del
+                    # banco de sesión no debe quedar en todo-activo y persistirse luego.
+                    banco_full = copy.deepcopy(banco)
+                    _toggle_all(banco_full, True)
+                    d_full = _b2cv(banco_full)
 
                 with st.spinner(t("vacancy_analyzing")):
                     result = analyze_vacancy(
                         d_full, vacancy_text,
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
                 st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(result, d_full)
 
@@ -72,6 +109,7 @@ def render_analysis_tab(d: dict):
                             st.session_state[sk.AI_API_KEY],
                             st.session_state[sk.AI_MODEL],
                             protected_keywords=result.get("matching_keywords", []),
+                            provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                         )
                         apply_ai_selection(banco, selected_ids)
                         save_banco(banco)
@@ -186,6 +224,7 @@ def render_refine_chat(d: dict, result: dict):
                         vacancy_text=vacancy_ctx,
                         system_prompt_override=REFINE_CHAT_SYSTEM_PROMPT,
                         analysis_context=analysis_ctx,
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
                     st.markdown(reply)
                     st.session_state[sk.REFINE_MESSAGES].append(
@@ -214,6 +253,7 @@ def render_refine_chat(d: dict, result: dict):
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
                         extra_context=extra,
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
                 st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(new_result, d)
                 st.session_state[sk.NEEDS_WIDGET_PUSH] = True

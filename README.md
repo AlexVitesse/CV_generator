@@ -1,6 +1,6 @@
 # CV Generator — Harvard Format
 
-Un generador de CV profesional con formato estilo Harvard, construido con **Streamlit**, **ReportLab** y análisis de vacantes con IA.
+Un generador de CV profesional con formato estilo Harvard, construido con **Streamlit**, **ReportLab** y análisis de vacantes con IA (Ollama · OpenAI · Anthropic · Gemini).
 
 ## ✨ Características
 
@@ -13,13 +13,16 @@ Un generador de CV profesional con formato estilo Harvard, construido con **Stre
 - **Interfaz bilingüe**: Toda la UI disponible en Español e Inglés.
 
 ### Análisis con IA
+- **Multi-proveedor**: Elige entre **Ollama Cloud**, **OpenAI**, **Anthropic (Claude)** o **Google Gemini** desde el sidebar. Cada proveedor guarda su propia API key y modelo; Ollama (`gpt-oss:120b-cloud`) es el default.
 - **Análisis de vacante**: Pega el texto de una vacante y obtén match score, keywords que coinciden/faltan, y sugerencias de adaptación editables.
+- **OCR de vacante (Gemini Vision)**: Sube una captura o foto de la vacante y extrae su texto automáticamente, sin pegarlo a mano. Requiere una API key de Gemini guardada.
 - **Chat de refinamiento**: Chat inline en el tab de Análisis para decirle a la IA sobre experiencia que no está en tu CV. La IA pregunta detalles y al re-analizar incorpora el contexto extra.
 - **Score Navbar**: Puntuación del último análisis siempre visible en la parte superior + botón para re-evaluar.
 - **Asesor de CV (Chat)**: Chat interactivo con IA para redactar bullets, agregar experiencia no documentada y recibir feedback honesto.
 - **Evaluación detallada**: Dashboard con barras por dimensión, requisitos uno por uno, detección de overfitting y veredictos accionables.
 - **Auto-traducción inteligente**: Al aplicar adaptaciones, si la vacante está en otro idioma, auto-traduce el CV antes de re-evaluar.
 - **Anti-overfitting**: Reglas estrictas contra inflación de experiencia, keyword stuffing y fabricación de hechos.
+- **Guards anti-fabricación**: Al adaptar el CV se bloquea la invención de métricas inexistentes y la elevación de skills a un tier superior al respaldado por la evidencia.
 - **Post-procesamiento**: Limpieza automática de problemas comunes de la IA (palabras pegadas, paréntesis justificativos, mezcla de idiomas).
 - **Inferencia técnica**: Detecta dependencias implícitas (FastAPI → Pydantic, RunPod → Docker) sin inventar.
 
@@ -32,6 +35,8 @@ Un generador de CV profesional con formato estilo Harvard, construido con **Stre
 - **Selección con IA**: La IA selecciona automáticamente los items más relevantes del banco para una vacante.
 
 ## 🚀 Instalación
+
+**Requisito:** Python 3.10 o superior (probado en 3.12).
 
 1. Clona este repositorio.
 2. Crea un entorno virtual y actívalo:
@@ -46,11 +51,19 @@ Un generador de CV profesional con formato estilo Harvard, construido con **Stre
 
 ## 🔑 Configuración de IA
 
-Para usar las funciones de análisis con IA necesitas una API key de [Ollama Cloud](https://ollama.com):
+Las funciones de IA soportan cuatro proveedores. Elige uno en el sidebar e ingresa su API key:
 
-1. Obtén tu API key en la plataforma de Ollama.
-2. En la barra lateral de la app, ingresa tu API key y modelo (por defecto: `minimax-m2.7:cloud`).
-3. La configuración se guarda localmente en `.ai_config.json` (excluido de git).
+| Proveedor | Modelo default (editable) | Dónde obtener la key |
+|-----------|---------------------------|----------------------|
+| Ollama Cloud (default) | `gpt-oss:120b-cloud` | [ollama.com](https://ollama.com) |
+| OpenAI | `gpt-5.1` | [platform.openai.com](https://platform.openai.com) |
+| Anthropic (Claude) | `claude-opus-4-8` | [console.anthropic.com](https://console.anthropic.com) |
+| Google Gemini | `gemini-2.5-flash` | [aistudio.google.com](https://aistudio.google.com) |
+
+1. En la barra lateral, elige el proveedor e ingresa su API key y modelo.
+2. Cada proveedor conserva su propia key y modelo; puedes alternar sin perderlos.
+3. La configuración se guarda localmente en `.ai_config.json` (excluido de git). Para Ollama, la variable de entorno `OLLAMA_API_KEY` tiene prioridad.
+4. El **OCR de vacante** usa Gemini Vision, así que necesitas una key de Gemini guardada para habilitarlo (independientemente del proveedor activo).
 
 ## 🛠️ Configuración Personalizada
 
@@ -69,7 +82,7 @@ streamlit run app.py
 
 ### Flujo típico
 1. Carga tu CV (JSON o edición manual) → navbar muestra "—"
-2. Tab **Análisis**: pega vacante → analiza → navbar muestra score (ej. "68%")
+2. Tab **Análisis**: pega vacante (o súbela como imagen → OCR con Gemini) → analiza → navbar muestra score (ej. "68%")
 3. Revisa sugerencias, edítalas → clic "Aplicar adaptaciones" → auto-traduce si es necesario → re-evalúa
 4. **Refinar análisis**: abre el chat inline → cuéntale a la IA experiencia extra → re-analiza con contexto
 5. Tab **Asesor**: pregunta al chat sobre redacción de bullets o feedback general

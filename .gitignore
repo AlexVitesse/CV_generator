@@ -19,6 +19,11 @@ banco_personal.json
 # Logs de IA
 logs/
 
+# Respaldos del banco y transcripts de sesión (basura local, no del proyecto)
+*.bak
+*.bak[0-9]
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
 # Archivos generados
 *.pdf
 

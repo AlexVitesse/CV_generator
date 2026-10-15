@@ -111,6 +111,15 @@ def sync_widgets_to_data(data: dict):
             if key in st.session_state:
                 proj[field] = st.session_state[key]
 
+    # Certificaciones
+    for cert in data.get("certifications", []):
+        key = f"c_tx_{cert['id']}"
+        if key in st.session_state:
+            cert["text"] = st.session_state[key]
+        cid_key = f"c_cid_{cert['id']}"
+        if cid_key in st.session_state:
+            cert["credential_id"] = st.session_state[cid_key]
+
     # Skills
     for sk in data.get("skills", []):
         key = f"s_tx_{sk['id']}"
@@ -148,6 +157,10 @@ def push_data_to_widgets(data: dict):
         st.session_state[f"p_ur_{pid}"] = proj.get("url", "")
         st.session_state[f"p_ds_{pid}"] = proj.get("description", "")
 
+    for cert in data.get("certifications", []):
+        st.session_state[f"c_tx_{cert['id']}"] = cert.get("text", "")
+        st.session_state[f"c_cid_{cert['id']}"] = cert.get("credential_id", "")
+
     for sk in data.get("skills", []):
         st.session_state[f"s_tx_{sk['id']}"] = sk.get("text", "")
 
@@ -167,12 +180,35 @@ _PROTECTED_TERMS = [
 ]
 
 
-def _fix_stuck_words(text: str) -> str:
+# Un token con mayúscula interna: MuseTalk, LangGraph, ChatPDF, pgVector, ZAPI...
+_CAMEL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9.+#]*[a-z0-9][A-Z][A-Za-z0-9.+#]*\b")
+
+
+def camel_terms_in(cv_data: dict | None) -> list[str]:
+    """Términos CamelCase que YA existen literalmente en el CV del candidato.
+
+    La lista fija `_PROTECTED_TERMS` se queda corta con cada tecnología nueva
+    (MuseTalk → 'Muse Talk', LangGraph → 'Lang Graph'). Lo que el candidato ya
+    escribió así es intencional por definición, así que se protege solo.
+    """
+    if not cv_data:
+        return []
+    parts = [str(cv_data.get("summary", ""))]
+    for exp in cv_data.get("experiences", []):
+        parts += [str(exp.get(f, "")) for f in ("company", "title", "bullets")]
+    for proj in cv_data.get("projects", []):
+        parts += [str(proj.get(f, "")) for f in ("name", "description")]
+    parts += [str(sk.get("text", "")) for sk in cv_data.get("skills", [])]
+    parts += [str(c.get("text", "")) for c in cv_data.get("certifications", [])]
+    return sorted(set(_CAMEL_RE.findall(" ".join(parts))), key=len, reverse=True)
+
+
+def _fix_stuck_words(text: str, extra_protected=()) -> str:
     """Inserta espacio entre palabras pegadas tipo CamelCase: 'EngineerBackend' → 'Engineer Backend'.
-    Protege términos técnicos conocidos (FastAPI, APIs, etc.)."""
+    Protege términos técnicos conocidos (FastAPI, APIs, etc.) y los del propio CV."""
     # Reemplazar términos protegidos con placeholders
     placeholders = {}
-    for i, term in enumerate(_PROTECTED_TERMS):
+    for i, term in enumerate([*extra_protected, *_PROTECTED_TERMS]):
         placeholder = f"\x00TERM{i}\x00"
         if term in text:
             text = text.replace(term, placeholder)
@@ -327,16 +363,99 @@ def _demote_missing_keyword_skills(suggested: str, missing_keywords: list) -> st
 VIABLE_SCORE_HIGH = 70  # >= esto: el prompt exige viable=true
 VIABLE_SCORE_LOW = 50   # < esto: el prompt exige viable=false
 
+# Pisos de score por cobertura de keywords (Bug B — scorer bimodal).
+# El LLM colapsa a dos polos (~90/~35): "35" es un valor-imán desconectado del match
+# real (visto en logs: 16 keywords cubiertas / 5 faltantes seguía dando 35). Este guard
+# SOLO sube el score hasta el piso que la cobertura implica; NUNCA lo baja (no debilita
+# la honestidad del prompt, solo corrige la caída artificial). Pares (cobertura, piso):
+_COVERAGE_FLOORS = ((0.85, 70), (0.70, 60), (0.55, 50))
+
+# Muestra mínima para creerle a la cobertura. Sin esto, el caso frecuente
+# "matched=2, missing=0" da cobertura 1.0 y regala un piso de 70 (+ viable=True,
+# que se deriva del score). En los logs, TODAS las corridas recientes traen
+# missing=0, así que el piso se estaba aplicando prácticamente siempre.
+_MIN_KEYWORDS_FOR_FLOOR = 5
+
+
+def _reconcile_score_with_coverage(score, matching_kw, missing_kw):
+    """Devuelve un score corregido hacia arriba si contradice la cobertura de keywords.
+
+    cobertura = matched / (matched + missing). Si el score quedó por debajo del piso
+    que esa cobertura implica, lo sube al piso. Si no hay keywords clasificadas o el
+    score ya respeta el piso, lo devuelve igual. Función pura (testeable).
+    """
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return score
+    n_match = len(matching_kw or [])
+    n_miss = len(missing_kw or [])
+    total = n_match + n_miss
+    if total < _MIN_KEYWORDS_FOR_FLOOR:
+        return score
+    coverage = n_match / total
+    for min_cov, floor in _COVERAGE_FLOORS:
+        if coverage >= min_cov:
+            return max(score, floor)
+    return score
+
+
+# Fracción de keywords matcheados que la re-eval debe conservar para que el score
+# pre-adapt actúe de piso. Tolerante a 1-2 pérdidas por reescritura/traducción.
+_REEVAL_PRESERVE_THRESHOLD = 0.85
+
+
+def _norm_keywords(keywords) -> set:
+    """Normaliza una lista de keywords a un set comparable (case-insensitive)."""
+    return {str(k).strip().lower() for k in (keywords or []) if str(k).strip()}
+
+
+def clamp_reeval_score(new_result: dict, prev_result: dict | None) -> dict:
+    """Evita que la re-eval tras adaptar baje el score si conservó los matches.
+
+    Adaptar a 1 página re-evalúa un CV más delgado y el scorer (bimodal, sin
+    determinismo perfecto en Gemini) lo castiga aunque la evidencia matcheada siga
+    presente (visto en logs: mismo CV → 78 luego 48). Si la re-eval preservó >=85%
+    de los keywords que el análisis original ya tenía matcheados, el score previo
+    actúa de PISO. Solo SUBE el score; nunca lo baja (si la adaptación sí perdió
+    evidencia, la caída es legítima y se respeta). Función pura.
+    """
+    if not isinstance(prev_result, dict):
+        return new_result
+    prev_score = prev_result.get("match_score")
+    new_score = new_result.get("match_score")
+    if not all(isinstance(s, (int, float)) and not isinstance(s, bool)
+               for s in (prev_score, new_score)):
+        return new_result
+    if new_score >= prev_score:
+        return new_result
+    prev_matched = _norm_keywords(prev_result.get("matching_keywords"))
+    if not prev_matched:
+        return new_result
+    preserved = len(prev_matched & _norm_keywords(new_result.get("matching_keywords")))
+    if preserved / len(prev_matched) >= _REEVAL_PRESERVE_THRESHOLD:
+        new_result["match_score"] = prev_score
+    return new_result
+
 
 def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
     """Limpia problemas comunes de la respuesta de la IA antes de mostrarla."""
     suggestions = result.get("suggestions", {})
 
+    # ── Reconciliar score con la cobertura de keywords (Bug B — anti imán-35) ──
+    # Antes de reconciliar viable, corrige el score si quedó por debajo del piso que
+    # implica su propia cobertura de keywords. Así el 88→35 deja de ser posible cuando
+    # la cobertura real es alta (el viable de abajo ya usa el score corregido).
+    score = _reconcile_score_with_coverage(
+        result.get("match_score"),
+        result.get("matching_keywords"),
+        result.get("missing_keywords"),
+    )
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        result["match_score"] = score
+
     # ── Reconciliar viable con el score (anti-contradicción) ──
     # El modelo a veces se contradice con sus propias bandas (visto en logs: 78→viable
     # False y 60→viable True). Forzamos coherencia en los extremos y respetamos su
     # juicio solo en la banda media 50-69, donde la viabilidad es genuinamente ambigua.
-    score = result.get("match_score")
     if isinstance(score, (int, float)) and not isinstance(score, bool):
         if score >= VIABLE_SCORE_HIGH:
             result["viable"] = True
@@ -344,13 +463,14 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
             result["viable"] = False
 
     # ── Fix summary: palabras pegadas (e.g. "EngineerBackend") ──
+    own_terms = camel_terms_in(cv_data)
     if suggestions.get("summary"):
-        suggestions["summary"] = _fix_stuck_words(suggestions["summary"])
+        suggestions["summary"] = _fix_stuck_words(suggestions["summary"], own_terms)
 
     # ── Fix experience titles y bullets ──
     for exp in suggestions.get("experiences", []):
         if exp.get("title"):
-            exp["title"] = _fix_stuck_words(exp["title"])
+            exp["title"] = _fix_stuck_words(exp["title"], own_terms)
         if exp.get("bullets"):
             exp["bullets"] = _strip_parenthetical_notes(exp["bullets"])
 
@@ -362,22 +482,26 @@ def sanitize_ai_result(result: dict, cv_data: dict | None = None) -> dict:
     # ── Fix skills: quitar paréntesis justificativos ──
     if suggestions.get("skills"):
         if isinstance(suggestions["skills"], list):
-            suggestions["skills"] = [
-                _strip_parenthetical_notes(s) for s in suggestions["skills"]
-            ]
+            lines = [_strip_parenthetical_notes(s) for s in suggestions["skills"]]
             original_lines = (
                 [sk.get("text", "") for sk in cv_data.get("skills", [])] if cv_data else []
             )
             missing_kw = result.get("missing_keywords", [])
-            fixed = []
-            for s in suggestions["skills"]:
-                # Anti-inflación: regresar skills promovidas a su tier original
+            # El prompt nuevo devuelve UNA línea por tier. Los guards operan sobre TODOS
+            # los tiers juntos (comparan rangos entre sí): correrlos por línea suelta los
+            # anula (un solo tier → nunca hay nivel al que degradar). Combinamos las líneas
+            # de tier en un string, aplicamos los guards una vez, y conservamos intactas
+            # las líneas no-tier (certs/idiomas) por si el modelo las incluyera.
+            tier_lines = [l for l in lines if _parse_skill_tiers(l)]
+            other = [l for l in lines if l and not _parse_skill_tiers(l)]
+            if tier_lines:
+                combined = " | ".join(tier_lines)
                 if original_lines:
-                    s = _enforce_skill_tiers(s, original_lines)
-                # Anti-contradicción: skill en missing_keywords no puede ir sobre 'exposure'
-                s = _demote_missing_keyword_skills(s, missing_kw)
-                fixed.append(s)
-            suggestions["skills"] = fixed
+                    combined = _enforce_skill_tiers(combined, original_lines)
+                combined = _demote_missing_keyword_skills(combined, missing_kw)
+                suggestions["skills"] = [combined] + other
+            else:
+                suggestions["skills"] = lines
 
     return result
 
@@ -431,6 +555,8 @@ def default_cv_data():
         if "id" not in proj: proj["id"] = uid()
     for edu in data.get("education", []):
         if "id" not in edu: edu["id"] = uid()
+    for cert in data.get("certifications", []):
+        if "id" not in cert: cert["id"] = uid()
     for sk in data.get("skills", []):
         if "id" not in sk: sk["id"] = uid()
 
@@ -444,8 +570,16 @@ import session_keys as sk
 # DETECCIÓN DE IDIOMA Y FLUJOS DIFERIDOS
 # ═══════════════════════════════════════════════════════════════
 
+# Señal decisiva: caracteres que el inglés no usa. Una vacante en español con mucho
+# boilerplate en inglés ("about the team", "requirements") empataba o ganaba en el
+# conteo de marcadores y disparaba la traducción completa del CV.
+_ES_ONLY_CHARS = re.compile(r"[áéíóúñ¿¡]", re.IGNORECASE)
+
+
 def detect_vacancy_language(text: str) -> str:
     """Detecta si la vacante está en inglés o español con heurística simple."""
+    if len(_ES_ONLY_CHARS.findall(text or "")) >= 3:
+        return "es"
     en_markers = [" the ", " and ", " with ", " experience ", " years ",
                   " team ", " about ", " requirements ", " skills ",
                   " develop ", " work ", " you ", " our ", " will "]
@@ -476,6 +610,7 @@ def deferred_translate_and_reevaluate(d: dict):
                 target=vacancy_lang,
                 api_key=st.session_state.get(sk.AI_API_KEY),
                 model=st.session_state.get(sk.AI_MODEL),
+                provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
             )
             st.session_state[sk.CV] = translated
             st.session_state[sk.CONTENT_LANG] = vacancy_lang
@@ -491,6 +626,9 @@ def deferred_translate_and_reevaluate(d: dict):
     # Re-evaluar con el CV actualizado (preservar extra_context del chat de refinamiento)
     try:
         from ai_analyzer import analyze_vacancy
+        # Score pre-adapt (análisis contra banco completo): actúa de piso si la
+        # re-eval conservó los keywords matcheados (clamp anti-caída artificial).
+        prev_result = st.session_state.get(sk.ANALYSIS_RESULT)
         extra_context = ""
         refine_msgs = st.session_state.get(sk.REFINE_MESSAGES, [])
         if refine_msgs:
@@ -502,7 +640,9 @@ def deferred_translate_and_reevaluate(d: dict):
             st.session_state[sk.AI_API_KEY],
             st.session_state[sk.AI_MODEL],
             extra_context=extra_context,
+            provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
         )
+        result = clamp_reeval_score(result, prev_result)
         st.session_state[sk.ANALYSIS_RESULT] = sanitize_ai_result(result, d)
         # Limpiar eval_result anterior porque el CV cambió
         st.session_state[sk.EVAL_RESULT] = None
@@ -514,12 +654,27 @@ def deferred_translate_and_reevaluate(d: dict):
 # APLICACIÓN DE PATCHES DEL CHAT ASESOR
 # ═══════════════════════════════════════════════════════════════
 
+def _resolve_patch_index(patch: dict, items: list) -> int:
+    """Resuelve el índice objetivo de un patch del chat.
+
+    Ancla por `target_id` (estable) contra `items`; si no hay id o no matchea,
+    cae al `target_index` posicional. Mantener el id evita que un patch aterrice
+    en la empresa/proyecto equivocado si el modelo reordenó su numeración.
+    """
+    tid = patch.get("target_id")
+    if tid:
+        for i, it in enumerate(items):
+            if isinstance(it, dict) and it.get("id") == tid:
+                return i
+    return patch.get("target_index", 0) or 0
+
+
 def apply_chat_patch(data: dict, patch: dict):
     """Aplica un patch del chat asesor al diccionario del CV."""
     field = patch.get("field")
-    idx = patch.get("target_index", 0) or 0
     action = patch.get("action", "append")
     content = patch.get("content", "")
+    idx = patch.get("target_index", 0) or 0  # default para summary/project_new
 
     if field == "summary":
         if action == "replace":
@@ -529,6 +684,7 @@ def apply_chat_patch(data: dict, patch: dict):
 
     elif field == "experience_bullet":
         exps = data.get("experiences", [])
+        idx = _resolve_patch_index(patch, exps)
         if 0 <= idx < len(exps):
             if action == "replace":
                 exps[idx]["bullets"] = content
@@ -538,11 +694,13 @@ def apply_chat_patch(data: dict, patch: dict):
 
     elif field == "experience_title":
         exps = data.get("experiences", [])
+        idx = _resolve_patch_index(patch, exps)
         if 0 <= idx < len(exps):
             exps[idx]["title"] = content
 
     elif field == "skill_line":
         skills = data.get("skills", [])
+        idx = _resolve_patch_index(patch, skills)
         if 0 <= idx < len(skills):
             if action == "replace":
                 skills[idx]["text"] = content
@@ -551,6 +709,7 @@ def apply_chat_patch(data: dict, patch: dict):
 
     elif field == "project_description":
         projs = data.get("projects", [])
+        idx = _resolve_patch_index(patch, projs)
         if 0 <= idx < len(projs):
             if action == "replace":
                 projs[idx]["description"] = content

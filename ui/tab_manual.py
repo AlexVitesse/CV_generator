@@ -187,6 +187,41 @@ def render_manual_tab(d: dict):
         })
         st.rerun()
 
+    # ── Certificaciones ──────────────────────────────────
+    st.header(t("certifications_header"))
+    st.caption(t("certifications_caption"))
+
+    d.setdefault("certifications", [])
+    cert_to_remove = None
+    for i, cert in enumerate(d["certifications"]):
+        cid = cert["id"]
+        c1, c2 = st.columns([12, 1])
+        with c1:
+            cert["text"] = st.text_input(
+                f"Certificación {i + 1}",
+                value=cert.get("text", ""),
+                key=f"c_tx_{cid}",
+                label_visibility="collapsed",
+            )
+            cert["credential_id"] = st.text_input(
+                t("credential_id"),
+                value=cert.get("credential_id", ""),
+                key=f"c_cid_{cid}",
+                help=t("credential_id_help"),
+            )
+        with c2:
+            st.write("")
+            if st.button("🗑️", key=f"c_del_{cid}"):
+                cert_to_remove = cid
+
+    if cert_to_remove is not None:
+        d["certifications"] = [c for c in d["certifications"] if c["id"] != cert_to_remove]
+        st.rerun()
+
+    if st.button(t("add_certification")):
+        d["certifications"].append({"id": uid(), "text": ""})
+        st.rerun()
+
     # ── Skills ───────────────────────────────────────────
     st.header(t("skills_header"))
     st.caption(t("skills_caption"))

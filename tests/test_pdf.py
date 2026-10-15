@@ -61,22 +61,25 @@ def test_safe_handles_none():
 # ── generate_cv_pdf ──────────────────────────────────────────────
 
 def test_generate_pdf_returns_valid_buffer():
-    buf, fits = generate_cv_pdf(_cv(), lang="es")
+    buf, fits, scale = generate_cv_pdf(_cv(), lang="es")
     assert isinstance(buf, BytesIO)
     assert isinstance(fits, bool)
+    assert 0.76 <= scale <= 1.0
     data = buf.getvalue()
     assert data.startswith(b"%PDF")
 
 
 def test_small_cv_fits_one_page():
-    buf, fits = generate_cv_pdf(_cv(n_exps=1, bullets_per_exp=2), lang="es")
+    buf, fits, scale = generate_cv_pdf(_cv(n_exps=1, bullets_per_exp=2), lang="es")
     pages = PdfReader(buf).get_num_pages()
     assert pages == 1
     assert fits is True
+    assert scale == 1.0  # un CV chico no debería necesitar encoger
 
 
 def test_fits_flag_matches_page_count():
     # El flag 'cabe_en_1_pagina' debe ser consistente con el conteo real de pypdf.
-    buf, fits = generate_cv_pdf(_cv(n_exps=8, bullets_per_exp=6), lang="es")
+    buf, fits, scale = generate_cv_pdf(_cv(n_exps=8, bullets_per_exp=6), lang="es")
     pages = PdfReader(buf).get_num_pages()
     assert fits == (pages == 1)
+    assert scale < 1.0  # un CV enorme obligó a encoger: el caller debe poder avisarlo

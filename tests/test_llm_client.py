@@ -24,6 +24,33 @@ def test_parse_with_surrounding_text():
     assert _parse_json_response(raw) == {"score": 80}
 
 
+def test_parse_repairs_missing_comma():
+    # Caso real del log: «Expecting ',' delimiter» tras un valor true/literal.
+    raw = '{\n  "score": 78,\n  "viable": true\n  "keywords": ["python", "aws"]\n}'
+    assert _parse_json_response(raw) == {
+        "score": 78, "viable": True, "keywords": ["python", "aws"],
+    }
+
+
+def test_parse_repairs_missing_comma_between_objects():
+    raw = '{"items": [{"a": 1}\n{"b": 2}]}'
+    assert _parse_json_response(raw) == {"items": [{"a": 1}, {"b": 2}]}
+
+
+def test_parse_repairs_trailing_comma():
+    raw = '{"a": 1, "b": [1, 2,], "c": {"x": 9,},}'
+    assert _parse_json_response(raw) == {"a": 1, "b": [1, 2], "c": {"x": 9}}
+
+
+def test_parse_repair_preserves_string_content():
+    # Comas y llaves DENTRO de un string no deben alterarse; solo la coma faltante
+    # entre las dos claves se inserta.
+    raw = '{"texto": "esto: }] no es real, ni clave"  "otra": "valor"}'
+    assert _parse_json_response(raw) == {
+        "texto": "esto: }] no es real, ni clave", "otra": "valor",
+    }
+
+
 def test_parse_empty_raises():
     with pytest.raises(json.JSONDecodeError):
         _parse_json_response("")

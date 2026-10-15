@@ -100,6 +100,12 @@ class SkillModel(_Base):
     text: str = Field("", min_length=1)
 
 
+class CertificationModel(_Base):
+    id: str = Field(default_factory=_uid)
+    text: str = Field("", min_length=1)
+    credential_id: str = ""  # ID/URL de verificación — se guarda pero NO se imprime en el PDF
+
+
 class CVModel(_Base):
     name: str = Field("", min_length=1)
     location: str = ""
@@ -111,6 +117,7 @@ class CVModel(_Base):
     experiences: List[ExperienceModel] = Field(default_factory=list)
     education: List[EducationModel] = Field(default_factory=list)
     projects: List[ProjectModel] = Field(default_factory=list)
+    certifications: List[CertificationModel] = Field(default_factory=list)
     skills: List[SkillModel] = Field(default_factory=list)
 
 
@@ -154,11 +161,12 @@ class TranslationResponse(_Base):
     experiences: List[dict] = Field(default_factory=list)
     education: List[dict] = Field(default_factory=list)
     projects: List[dict] = Field(default_factory=list)
+    certifications: List[dict] = Field(default_factory=list)
     skills: List[dict] = Field(default_factory=list)
 
 
 def _coerce_skills(raw) -> list:
-    """Las skills pueden venir como strings sueltos o dicts; normaliza a dicts."""
+    """Skills y certificaciones pueden venir como strings sueltos o dicts; normaliza a dicts."""
     out = []
     for sk in raw or []:
         if isinstance(sk, str):
@@ -179,9 +187,11 @@ def parse_cv(data: dict) -> tuple[dict, List[str]]:
     """
     issues: List[str] = []
 
-    # Normalizar skills antes de Pydantic (acepta strings sueltos)
+    # Normalizar skills/certificaciones antes de Pydantic (acepta strings sueltos)
     if isinstance(data, dict) and "skills" in data:
         data = {**data, "skills": _coerce_skills(data.get("skills"))}
+    if isinstance(data, dict) and "certifications" in data:
+        data = {**data, "certifications": _coerce_skills(data.get("certifications"))}
 
     try:
         model = CVModel.model_validate(data)

@@ -1,12 +1,20 @@
 """Tests de los guards anti-fabricación: métricas (#1), tier de skills (#2),
 reconciliación de viabilidad (#3). Cubren los casos reales vistos en logs/."""
 
-from metrics_guard import extract_metrics, find_fabricated_metrics
+from metrics_guard import extract_metrics, find_fabricated_metrics, resolve_target_index
 from helpers import (
     sanitize_ai_result,
     _enforce_skill_tiers,
     _demote_missing_keyword_skills,
+    _reconcile_score_with_coverage,
+    _resolve_patch_index,
+    _fix_stuck_words,
+    camel_terms_in,
+    detect_vacancy_language,
+    apply_chat_patch,
 )
+from ai_analyzer import _reintegrate_lost_evidence, _drop_projects_duplicating_experience
+from translate import _restore_ids_with_fallback
 
 
 # ── #1 — extract_metrics ─────────────────────────────────────────
@@ -112,3 +120,286 @@ def test_mid_score_respects_model_judgment():
     assert res["viable"] is True
     res2 = sanitize_ai_result({"match_score": 58, "viable": False, "suggestions": {}})
     assert res2["viable"] is False
+
+
+# ── Bug A — anti-misatribución de experiencias/proyectos ─────────
+
+_EXPS = [
+    {"id": "exp_dcm", "company": "DCM Moguls", "title": "AI Engineer",
+     "bullets": "Contribuyó commits a codebase multi-tenant; cumplimiento CASA Tier 2 OWASP; framework red-team de agentes Mastra."},
+    {"id": "exp_zapi", "company": "ZAPI", "title": "Founder",
+     "bullets": "Plataforma SaaS multi-tenant WhatsApp con agente ReAct, Gemini Vision, React Tailwind, 4 servicios Docker, Whisper."},
+    {"id": "exp_condor", "company": "Ingeniería Cóndor", "title": "Backend",
+     "bullets": "Arquitectura IoT ESP32 MQTT Firebase; APIs FastAPI y C# en Oracle Cloud; RAG manufactura LangChain ChromaDB; CI/CD en RunPod."},
+]
+
+
+def test_resolve_by_id_beats_model_index():
+    # El modelo numera index=0 (DCM) pero el id apunta a Cóndor → gana el id.
+    sug = {"id": "exp_condor", "index": 0, "title": "Backend",
+           "bullets": "Diseñó arquitectura IoT con ESP32 y MQTT."}
+    assert resolve_target_index(sug, _EXPS, kind="experience") == 2
+
+
+def test_resolve_by_content_when_id_missing():
+    # Sin id; el contenido (FastAPI/Oracle Cloud/RunPod) es de Cóndor aunque diga index=0.
+    sug = {"index": 0, "title": "AI Engineer Jr.",
+           "bullets": "Diseñó y desplegó APIs REST con FastAPI en Oracle Cloud, desplegado en RunPod."}
+    assert resolve_target_index(sug, _EXPS, kind="experience") == 2
+
+
+def test_resolve_discards_when_ambiguous():
+    # Contenido genérico sin señal discriminante de ninguna empresa → None (descartar).
+    sug = {"title": "Engineer", "bullets": "Trabajó en varias tareas mejorando resultados generales."}
+    assert resolve_target_index(sug, _EXPS, kind="experience") is None
+
+
+def test_resolve_unknown_id_falls_back_to_content():
+    # id inexistente → cae a contenido; los tokens de DCM resuelven a index 0.
+    sug = {"id": "exp_nope", "title": "AI Engineer",
+           "bullets": "Cumplimiento CASA Tier 2 OWASP y framework red-team de agentes Mastra."}
+    assert resolve_target_index(sug, _EXPS, kind="experience") == 0
+
+
+def test_metrics_guard_uses_model_intent_not_content():
+    # Guard de métricas: el modelo dice index=0 (DCM) pero mete contenido+cifra de Cóndor.
+    # Debe detectar el trasplante (fallback="index"), no auto-justificarlo por contenido.
+    cv = {"experiences": _EXPS, "projects": [], "summary": "", "skills": []}
+    sugs = {"experiences": [
+        {"index": 0, "title": "AI Engineer",
+         "bullets": "APIs FastAPI en Oracle Cloud procesando 1,200 solicitudes diarias."},
+    ]}
+    offenders = find_fabricated_metrics(sugs, cv)
+    assert any(o["metric"].startswith("1,200") and o["index"] == 0 for o in offenders)
+
+
+# ── Bug A — chat patch anclado por id ────────────────────────────
+
+def test_chat_patch_resolves_by_target_id():
+    data = {"experiences": [dict(e) for e in _EXPS]}
+    # target_index=0 (DCM) sería erróneo; target_id manda → Cóndor.
+    patch = {"field": "experience_title", "target_id": "exp_condor",
+             "target_index": 0, "action": "replace", "content": "Backend & AI Engineer"}
+    apply_chat_patch(data, patch)
+    assert data["experiences"][2]["title"] == "Backend & AI Engineer"
+    assert data["experiences"][0]["title"] == "AI Engineer"  # DCM intacto
+
+
+def test_chat_patch_falls_back_to_index_without_id():
+    data = {"experiences": [dict(e) for e in _EXPS]}
+    patch = {"field": "experience_title", "target_index": 1,
+             "action": "replace", "content": "Fundador"}
+    apply_chat_patch(data, patch)
+    assert data["experiences"][1]["title"] == "Fundador"
+
+
+# ── Bug B — guard score ↔ cobertura (anti imán-35) ───────────────
+
+def test_score_floor_high_coverage():
+    # 18/21 = 0.857 ≥ 0.85 → piso 70 (el 35-imán sube).
+    assert _reconcile_score_with_coverage(35, ["k"] * 18, ["m"] * 3) == 70
+
+
+def test_score_floor_mid_coverage_user_case():
+    # Caso real del usuario: 16 match / 5 miss = 0.762 → piso 60.
+    assert _reconcile_score_with_coverage(35, ["k"] * 16, ["m"] * 5) == 60
+
+
+def test_score_floor_never_lowers():
+    # Cobertura baja (2/10) no debe bajar un score alto: el guard solo sube.
+    assert _reconcile_score_with_coverage(90, ["k"] * 2, ["m"] * 8) == 90
+
+
+def test_score_unchanged_without_keywords():
+    assert _reconcile_score_with_coverage(35, [], []) == 35
+
+
+def test_sanitize_applies_score_floor():
+    res = sanitize_ai_result({
+        "match_score": 35, "viable": True,
+        "matching_keywords": ["k"] * 16, "missing_keywords": ["m"] * 5,
+        "suggestions": {},
+    })
+    assert res["match_score"] == 60
+
+
+# ── Bug C — preservar evidencia en select_from_bank ──────────────
+
+_MANIFEST = [
+    {"id": "b1", "type": "bullet", "text": "Construyó automated testing suites con pytest", "tags": []},
+    {"id": "b2", "type": "bullet", "text": "Diseñó APIs REST en FastAPI", "tags": []},
+    {"id": "b3", "type": "bullet", "text": "Implementó CI/CD con Docker", "tags": ["docker"]},
+]
+
+
+def test_reintegrates_dropped_protected_keyword():
+    # Selección dejó fuera la única evidencia de "automated testing" → se re-agrega b1.
+    out = _reintegrate_lost_evidence(_MANIFEST, ["b2"], ["automated testing"])
+    assert "b1" in out and out[0] == "b2"  # preserva orden original + reintegra
+
+
+def test_no_reintegration_when_covered():
+    out = _reintegrate_lost_evidence(_MANIFEST, ["b2", "b1"], ["automated testing"])
+    assert out == ["b2", "b1"]
+
+
+def test_no_reintegration_without_protected():
+    assert _reintegrate_lost_evidence(_MANIFEST, ["b2"], None) == ["b2"]
+
+
+# ── Bug A — translate re-alinea por id (no por posición) ─────────
+
+def test_translate_realigns_by_id_when_reordered():
+    data = [{"id": "x", "company": "DCM"}, {"id": "y", "company": "Cóndor"}]
+    # El LLM devolvió las experiencias REORDENADAS (y antes que x).
+    trans = [{"id": "y", "company": "Cóndor-tr"}, {"id": "x", "company": "DCM-tr"}]
+    _restore_ids_with_fallback(data, trans, "es", "en")
+    # Tras re-alinear, la posición 0 debe ser la de id x (DCM), no la de y.
+    assert trans[0]["id"] == "x" and trans[0]["company"] == "DCM-tr"
+    assert trans[1]["id"] == "y" and trans[1]["company"] == "Cóndor-tr"
+
+
+def test_translate_omitted_middle_item_no_misattribution():
+    # El LLM omitió el item INTERMEDIO (B). No debe correr la lista y meter C bajo B.
+    data = [{"id": "a", "company": "A"}, {"id": "b", "company": ""},
+            {"id": "c", "company": "C"}]
+    trans = [{"id": "a", "company": "A-tr"}, {"id": "c", "company": "C-tr"}]
+    _restore_ids_with_fallback(data, trans, "es", "en")
+    assert trans[0]["id"] == "a" and trans[0]["company"] == "A-tr"
+    assert trans[1]["id"] == "b"                       # hueco de B rellenado en SU posición
+    assert trans[2]["id"] == "c" and trans[2]["company"] == "C-tr"
+
+
+# ── #2 — guards de tier corren sobre el array (una línea por tier) ──
+
+def test_skill_tiers_enforced_on_array_form():
+    # El prompt nuevo devuelve skills como ARRAY (una línea por tier). El guard debe
+    # regresar Rust (originalmente 'Familiaridad') al tier bajo aunque la IA la promovió.
+    cv = {"skills": [{"text": "Dominio avanzado: Python"},
+                     {"text": "Familiaridad: Rust"}]}
+    result = {"missing_keywords": [], "suggestions": {"skills": [
+        "Core skills: Python, Rust", "Working knowledge: Docker", "Exposure to: Bash",
+    ]}}
+    out = sanitize_ai_result(result, cv)["suggestions"]["skills"][0]
+    assert "Rust" in out.split("Exposure to:")[1]          # degradada al tier bajo
+    assert "Rust" not in out.split("|")[0]                  # ya no en 'Core skills'
+
+
+# ── #9 — evidencia protegida por palabra completa (no substring) ──
+
+def test_java_not_covered_by_javascript():
+    manifest = [{"id": "j1", "text": "Backend en Java con Spring Boot"},
+                {"id": "j2", "text": "Frontend en JavaScript y React"}]
+    # Solo j2 (JavaScript) seleccionado: "Java" NO está cubierto → se reintegra j1.
+    out = _reintegrate_lost_evidence(manifest, ["j2"], ["Java"])
+    assert "j1" in out
+
+
+# ── Reintegración: bullet sin su experiencia no se renderiza; summary no se pisa ──
+
+def test_reintegrated_bullet_brings_its_parent_experience():
+    manifest = [{"id": "exp_dcm", "type": "experience", "text": "DCM — Engineer (Contractor)"},
+                {"id": "bul_dcm", "type": "bullet", "parent": "exp_dcm", "text": "Built features in Mastra"},
+                {"id": "exp_z", "type": "experience", "text": "ZAPI — Founder"}]
+    out = _reintegrate_lost_evidence(manifest, ["exp_z"], ["Mastra"])
+    assert "bul_dcm" in out and "exp_dcm" in out  # sin el padre, el bullet no sale en el PDF
+
+
+def test_reintegration_never_readds_a_summary():
+    manifest = [{"id": "sum_a", "type": "summary", "text": "Backend: experto en Rust"},
+                {"id": "sk_a", "type": "skill", "text": "Rust, Go, Python"},
+                {"id": "sum_b", "type": "summary", "text": "AI: agentes"}]
+    out = _reintegrate_lost_evidence(manifest, ["sum_b"], ["Rust"])
+    assert "sum_a" not in out and "sk_a" in out  # el summary elegido no se pisa
+
+
+# ── Dedup proyecto ↔ experiencia (ZAPI salía dos veces) ──
+
+def test_project_duplicating_selected_experience_is_dropped():
+    manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
+                {"id": "proj_z", "type": "project", "text": "ZAPI — WhatsApp Sales SaaS: multi-tenant"},
+                {"id": "proj_rag", "type": "project", "text": "RAG Assistant: ChromaDB y BM25"}]
+    out = _drop_projects_duplicating_experience(manifest, ["exp_z", "proj_z", "proj_rag"])
+    assert out == ["exp_z", "proj_rag"]
+
+
+# ── Clamp de la re-eval tras adaptar (anti-caída artificial del score) ──
+
+from helpers import clamp_reeval_score
+
+
+def test_clamp_floors_score_when_matches_preserved():
+    # Caso real: pre-adapt 78, re-eval cae a 48 pero conservó todos los matches.
+    prev = {"match_score": 78, "matching_keywords": ["Python", "FastAPI", "Docker", "AWS"]}
+    new = {"match_score": 48, "matching_keywords": ["python", "fastapi", "docker", "aws", "redis"]}
+    out = clamp_reeval_score(new, prev)
+    assert out["match_score"] == 78  # el piso pre-adapt aplica (case-insensitive)
+
+
+def test_clamp_respects_legitimate_drop():
+    # Si la adaptación SÍ perdió evidencia matcheada (<85%), la caída es legítima.
+    prev = {"match_score": 78, "matching_keywords": ["Python", "FastAPI", "Docker", "AWS"]}
+    new = {"match_score": 48, "matching_keywords": ["python"]}  # perdió 3/4
+    assert clamp_reeval_score(new, prev)["match_score"] == 48
+
+
+def test_clamp_never_lowers():
+    prev = {"match_score": 60, "matching_keywords": ["Python"]}
+    new = {"match_score": 90, "matching_keywords": ["python"]}
+    assert clamp_reeval_score(new, prev)["match_score"] == 90
+
+
+def test_clamp_noop_without_prev():
+    new = {"match_score": 48, "matching_keywords": ["python"]}
+    assert clamp_reeval_score(new, None)["match_score"] == 48
+
+
+# ── Piso de cobertura: exige muestra mínima (miss_kw=0 no regala un 70) ──
+
+def test_coverage_floor_needs_minimum_sample():
+    # Caso real de los logs: el modelo devuelve pocos keywords y 0 faltantes.
+    # cobertura 1.0 sobre 2 keywords NO debe subir el score a 70.
+    assert _reconcile_score_with_coverage(35, ["python", "sql"], []) == 35
+
+
+def test_coverage_floor_applies_with_enough_keywords():
+    kws = ["python", "fastapi", "docker", "aws", "sql", "git"]
+    assert _reconcile_score_with_coverage(35, kws, []) == 70
+
+
+# ── CamelCase: los términos del propio CV se protegen solos ──
+
+def test_camel_terms_from_cv_are_not_split():
+    cv = {"summary": "", "experiences": [{"bullets": "Construyó MuseTalk y LangGraph"}]}
+    terms = camel_terms_in(cv)
+    assert {"MuseTalk", "LangGraph"} <= set(terms)
+    out = _fix_stuck_words("Ingeniero de MuseTalk y LangGraph", terms)
+    assert "Muse Talk" not in out and "Lang Graph" not in out
+
+
+def test_stuck_words_still_split_when_unknown():
+    assert _fix_stuck_words("EngineerBackend") == "Engineer Backend"
+
+
+# ── Idioma: acentos/¿¡ ganan al conteo de marcadores en inglés ──
+
+def test_spanish_vacancy_with_english_boilerplate():
+    txt = ("About the team and our requirements: buscamos un ingeniero con "
+           "experiencia en programación, diseño de aplicaciones y gestión técnica.")
+    assert detect_vacancy_language(txt) == "es"
+
+
+def test_english_vacancy_still_detected():
+    txt = "About the team: you will work with our engineers and develop new features."
+    assert detect_vacancy_language(txt) == "en"
+
+
+# ── merge_skill_line: reusa el id (no ensucia el banco en cada guardado) ──
+
+def test_merge_skill_line_reuses_id_and_keeps_languages():
+    from ui.diff_viewer import merge_skill_line
+    old = [{"id": "sk_tech", "text": "Core skills: Python"},
+           {"id": "sk_lang", "text": "Languages: Spanish, English"}]
+    out = merge_skill_line(old, "Core skills: Python, Go")
+    assert out[0]["id"] == "sk_tech"          # mismo id → merge_cv_to_bank actualiza
+    assert out[1]["id"] == "sk_lang"          # la línea de idiomas sobrevive

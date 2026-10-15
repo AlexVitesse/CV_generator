@@ -5,7 +5,7 @@ Traducción automática de contenido del CV usando Google Translate (gratis).
 import copy
 import json
 
-from llm_client import call_ollama, _parse_json_response, get_logger
+from llm_client import call_llm, _parse_json_response, get_logger
 from pydantic import ValidationError
 from validation import TranslationResponse
 
@@ -111,21 +111,50 @@ def translate_text(text: str, source: str, target: str) -> str:
 
 
 def _restore_ids_with_fallback(data_section: list, trans_section: list, source: str, target: str):
-    """Restaura IDs y traduce items faltantes si el LLM devolvió menos."""
-    if len(trans_section) < len(data_section):
-        logger.warning(
-            "LLM devolvió %d items de %d — traduciendo los %d faltantes con fallback",
-            len(trans_section), len(data_section),
-            len(data_section) - len(trans_section),
-        )
-        for i in range(len(trans_section), len(data_section)):
-            orig = data_section[i]
-            missing = copy.deepcopy(orig)
+    """Re-alinea los items traducidos con los originales y restaura/traduce faltantes.
+
+    El prompt de traducción conserva el `id` de cada item. Si el LLM reordena los
+    items (devuelve la experiencia B antes que la A), restaurar el id por POSICIÓN
+    (zip) le pondría a B el id de A → los datos quedan bajo la empresa equivocada.
+    Por eso, cuando los ids vienen presentes, alineamos POR ID; solo caemos a la
+    posición para items que el LLM no devolvió o que perdieron su id.
+    """
+    # ── Re-alinear POSICIONALMENTE contra data_section, dejando huecos ──
+    # Construimos una lista con UNA posición por original: la traducción se ancla por id
+    # cuando está; si no, se consume de la cola sin-id. Un item intermedio omitido deja un
+    # hueco (None) en SU posición — nunca corre la lista para que los bullets de B caigan
+    # bajo A. Cada hueco se rellena luego traduciendo su PROPIO original.
+    trans_by_id = {
+        it["id"]: it for it in trans_section
+        if isinstance(it, dict) and it.get("id")
+    }
+    no_id = [it for it in trans_section
+             if not (isinstance(it, dict) and it.get("id"))]
+    ni = iter(no_id)
+    aligned = []
+    for orig in data_section:
+        oid = orig.get("id") if isinstance(orig, dict) else None
+        if oid and oid in trans_by_id:
+            aligned.append(trans_by_id.pop(oid))  # pop: nunca reutilizar la misma traducción
+        else:
+            aligned.append(next(ni, None))         # None = hueco a rellenar por fallback
+    # Conservar traducciones sobrantes (ids extra que no mapean a ningún original).
+    aligned.extend(trans_by_id.values())
+
+    # ── Rellenar cada hueco traduciendo el ORIGINAL de esa misma posición ──
+    holes = [i for i, t in enumerate(aligned) if t is None]
+    if holes:
+        logger.warning("LLM omitió %d de %d items — traduciendo por fallback en su posición",
+                        len(holes), len(data_section))
+        for i in holes:
+            missing = copy.deepcopy(data_section[i])
             for key in ("company", "title", "bullets", "name", "description",
                          "institution", "degree", "details", "text", "summary"):
                 if key in missing and isinstance(missing[key], str) and missing[key].strip():
                     missing[key] = _translate_fallback(missing[key], source, target)
-            trans_section.append(missing)
+            aligned[i] = missing
+
+    trans_section[:] = aligned
 
     for orig, trans in zip(data_section, trans_section):
         if isinstance(trans, dict) and isinstance(orig, dict):
@@ -137,8 +166,9 @@ def _translate_fallback(text: str, source: str, target: str) -> str:
     return translate_text(text, source, target)
 
 
-def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, model: str) -> dict:
-    """Traduce la estructura completa del CV usando LLM (Ollama Cloud) en una sola llamada."""
+def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, model: str,
+                         provider: str = "ollama") -> dict:
+    """Traduce la estructura completa del CV usando el LLM en una sola llamada."""
     cv_clean = copy.deepcopy(data)
 
     system_prompt = (
@@ -148,17 +178,18 @@ def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, mod
         "1. Translate all text values of fields such as: 'summary', 'company', 'title', 'bullets', 'name', 'description', 'institution', 'degree', 'details', 'location'.\n"
         "2. Keep all JSON keys, IDs (like 'id'), URLs, phone numbers, and structural schema exactly the same.\n"
         "3. Preserve technical jargon appropriately: do not translate standard tech terms literally (e.g., keep 'FastAPI', 'RAG', 'machine learning', 'data pipelines' as standard professional terms in the target language).\n"
-        "4. Return ONLY valid raw JSON representing the translated CV. Do not wrap it in markdown code blocks like ```json or add any explanation text."
+        "4. Do NOT translate the 'certifications' section: keep every certification name exactly as-is (official credential names like 'AWS Cloud Practitioner', 'OCI AI Foundations').\n"
+        "5. Return ONLY valid raw JSON representing the translated CV. Do not wrap it in markdown code blocks like ```json or add any explanation text."
     )
 
     user_prompt = json.dumps(cv_clean, ensure_ascii=False)
 
-    raw_reply = call_ollama(
+    raw_reply = call_llm(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        model=model, api_key=api_key, json_mode=True, timeout=120.0,
+        provider=provider, model=model, api_key=api_key, json_mode=True, timeout=120.0,
     )
 
     # Parsing tolerante a fences (antes era json.loads directo → crash si venía texto)
@@ -189,19 +220,25 @@ def translate_cv_via_llm(data: dict, source: str, target: str, api_key: str, mod
             data["skills"], translated_json["skills"], source, target
         )
 
+    # Certificaciones: nombres oficiales de credenciales → se preservan sin traducir,
+    # sobrescribiendo cualquier intento del LLM de traducirlas.
+    if "certifications" in data:
+        translated_json["certifications"] = copy.deepcopy(data["certifications"])
+
     return translated_json
 
 
 def translate_cv_data(data: dict, source: str, target: str,
-                       progress_callback=None, api_key: str = None, model: str = None) -> dict:
+                       progress_callback=None, api_key: str = None, model: str = None,
+                       provider: str = "ollama") -> dict:
     """Traduce todos los campos de texto del CV. Usa traducción por IA si api_key está disponible,
     si no, o si falla, usa deep-translator."""
     if api_key and model:
         try:
-            logger.info("Iniciando traducción semántica por IA (Ollama Cloud)")
+            logger.info("Iniciando traducción semántica por IA (provider=%s)", provider)
             if progress_callback:
                 progress_callback(0.3)
-            result = translate_cv_via_llm(data, source, target, api_key, model)
+            result = translate_cv_via_llm(data, source, target, api_key, model, provider=provider)
             if progress_callback:
                 progress_callback(1.0)
             return result

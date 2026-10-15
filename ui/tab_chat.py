@@ -6,7 +6,7 @@ import logging
 
 import streamlit as st
 
-from helpers import sync_widgets_to_data, apply_chat_patch
+from helpers import sync_widgets_to_data, apply_chat_patch, _resolve_patch_index
 from i18n import t
 from ai_analyzer import AI_AVAILABLE
 
@@ -54,7 +54,19 @@ def render_chat_tab(d: dict):
         st.divider()
         st.subheader(t("chat_patch_preview"))
         st.markdown(f"**{t('chat_patch_field')}:** `{patch.get('field')}`")
-        if patch.get("target_index") is not None:
+        # Mostrar el destino real (empresa/proyecto) resuelto por id, para que el
+        # usuario verifique que el patch cae en el ítem correcto (no en otra empresa).
+        _field = patch.get("field")
+        _list_key = {"experience_bullet": "experiences", "experience_title": "experiences",
+                     "project_description": "projects", "skill_line": "skills"}.get(_field)
+        if _list_key:
+            _items = d.get(_list_key, [])
+            _ti = _resolve_patch_index(patch, _items)
+            if 0 <= _ti < len(_items):
+                _it = _items[_ti]
+                _label = _it.get("company") or _it.get("name") or _it.get("text", "")[:40] or f"#{_ti}"
+                st.markdown(f"**Destino:** `{_label}`")
+        elif patch.get("target_index") is not None:
             st.markdown(f"**Index:** `{patch.get('target_index')}`")
         st.markdown(f"**{t('chat_patch_action')}:** `{patch.get('action', 'append')}`")
         st.text_area(
@@ -98,6 +110,7 @@ def render_chat_tab(d: dict):
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
                         vacancy_text=vacancy_ctx,
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
                     st.markdown(reply)
                     st.session_state[sk.CHAT_MESSAGES].append(
@@ -123,6 +136,7 @@ def render_chat_tab(d: dict):
                         last_msg, d,
                         st.session_state[sk.AI_API_KEY],
                         st.session_state[sk.AI_MODEL],
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
                     if patch:
                         st.session_state[sk.CHAT_PENDING_PATCH] = patch

@@ -75,6 +75,7 @@ def render_sidebar(d: dict):
                         ),
                         api_key=st.session_state.get(sk.AI_API_KEY),
                         model=st.session_state.get(sk.AI_MODEL),
+                        provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                     )
 
                     progress_bar.progress(1.0, text="✅")
@@ -100,12 +101,14 @@ def render_sidebar(d: dict):
         if st.button(t("generate_pdf"), type="primary",
                      use_container_width=True):
             try:
-                pdf_buf, cabe = generate_cv_pdf(d, lang=st.session_state[sk.LANG])
+                pdf_buf, cabe, escala = generate_cv_pdf(d, lang=st.session_state[sk.LANG])
                 st.session_state[sk.PDF_BYTES] = pdf_buf.getvalue()
-                if cabe:
-                    st.success(t("pdf_success"))
-                else:
+                if not cabe:
                     st.warning(t("pdf_no_fit"))
+                elif escala < 1.0:
+                    st.warning(t("pdf_shrunk").format(int(escala * 100)))
+                else:
+                    st.success(t("pdf_success"))
             except Exception as e:
                 logger.exception("PDF generation error")
                 st.error(t("pdf_error").format(e))
@@ -153,6 +156,7 @@ def render_sidebar(d: dict):
                                 SUMMARY_SYSTEM_PROMPT.format(lang=lang_name),
                                 f"Genera un summary/elevator pitch en {lang_name}.",
                                 vacancy_text=vacancy_ctx,
+                                provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                             )
                         st.session_state[sk.GENERATED_SUMMARY] = summary
                     except Exception as e:
@@ -179,6 +183,7 @@ def render_sidebar(d: dict):
                                     COVER_LETTER_SYSTEM_PROMPT.format(lang=lang_name),
                                     f"Genera una cover letter en {lang_name} para la empresa {_co}.",
                                     vacancy_text=vacancy_ctx,
+                                    provider=st.session_state.get(sk.AI_PROVIDER, "ollama"),
                                 )
                             st.session_state[sk.GENERATED_COVER] = cover
                         except Exception as e:
@@ -206,7 +211,7 @@ def render_sidebar(d: dict):
                 imported, issues = parse_cv(imported)
                 st.session_state[sk.CV] = imported
                 st.session_state[sk.CONTENT_LANG] = "es"
-                clear_keys("x_", "p_", "e_", "s_", "f_")
+                clear_keys("x_", "p_", "e_", "s_", "f_", "c_tx_", "c_cid_")
                 st.success(t("import_success"))
                 for field in issues:
                     st.warning(t(f"validation_{field}"))
@@ -244,21 +249,59 @@ def render_sidebar(d: dict):
         st.subheader(t("ai_config_header"))
 
         if AI_AVAILABLE:
-            from ai_analyzer import save_ai_config, DEFAULT_MODEL
-            new_key = st.text_input(
-                t("ai_api_key"),
-                value=st.session_state[sk.AI_API_KEY],
-                type="password",
+            from ai_analyzer import save_ai_config
+            from llm_client import PROVIDERS, PROVIDER_LABELS, DEFAULT_MODELS
+
+            providers_cfg = st.session_state.setdefault(sk.AI_PROVIDERS, {})
+            cur_provider = st.session_state.get(sk.AI_PROVIDER, "ollama")
+
+            # ── Selector de proveedor (Ollama / OpenAI / Anthropic / Gemini) ──
+            sel_provider = st.selectbox(
+                t("ai_provider"),
+                options=list(PROVIDERS),
+                index=list(PROVIDERS).index(cur_provider) if cur_provider in PROVIDERS else 0,
+                format_func=lambda p: PROVIDER_LABELS.get(p, p),
             )
-            new_model = st.text_input(
-                t("ai_model"),
-                value=st.session_state[sk.AI_MODEL] or DEFAULT_MODEL,
-            )
-            # Guardar si cambió
+            # Los inputs usan key explícita para poder leer lo que el usuario tenga
+            # escrito (incluso a medio editar) en el momento de cambiar de proveedor.
+            if "ai_key_input" not in st.session_state:
+                st.session_state["ai_key_input"] = st.session_state[sk.AI_API_KEY]
+                st.session_state["ai_model_input"] = (
+                    st.session_state[sk.AI_MODEL] or DEFAULT_MODELS[cur_provider]
+                )
+
+            if sel_provider != cur_provider:
+                # Guardado defensivo: persistir lo que esté escrito para el proveedor ACTUAL
+                # ANTES de cambiar, así nunca se pierde una key recién tecleada.
+                pend_key = st.session_state.get("ai_key_input", st.session_state[sk.AI_API_KEY])
+                pend_model = st.session_state.get("ai_model_input", st.session_state[sk.AI_MODEL])
+                providers_cfg[cur_provider] = {"api_key": pend_key, "model": pend_model}
+                save_ai_config(cur_provider, pend_key, pend_model)
+
+                # Cargar las credenciales guardadas del proveedor elegido (sin perder las otras).
+                saved = providers_cfg.get(sel_provider, {})
+                new_active_key = saved.get("api_key", "")
+                new_active_model = saved.get("model") or DEFAULT_MODELS[sel_provider]
+                st.session_state[sk.AI_PROVIDER] = sel_provider
+                st.session_state[sk.AI_API_KEY] = new_active_key
+                st.session_state[sk.AI_MODEL] = new_active_model
+                # Persistir también el proveedor ACTIVO nuevo: si no, .ai_config.json
+                # sigue apuntando al anterior hasta que el usuario edite key/modelo, y al
+                # reiniciar la app revierte silenciosamente al proveedor viejo (Ollama).
+                save_ai_config(sel_provider, new_active_key, new_active_model)
+                # Re-sembrar los widgets para que muestren los valores del nuevo proveedor.
+                st.session_state["ai_key_input"] = new_active_key
+                st.session_state["ai_model_input"] = new_active_model
+                st.rerun()
+
+            new_key = st.text_input(t("ai_api_key"), type="password", key="ai_key_input")
+            new_model = st.text_input(t("ai_model"), key="ai_model_input")
+            # Guardar si cambió (por proveedor)
             if new_key != st.session_state[sk.AI_API_KEY] or new_model != st.session_state[sk.AI_MODEL]:
                 st.session_state[sk.AI_API_KEY] = new_key
                 st.session_state[sk.AI_MODEL] = new_model
-                save_ai_config(new_key, new_model)
+                providers_cfg[sel_provider] = {"api_key": new_key, "model": new_model}
+                save_ai_config(sel_provider, new_key, new_model)
         else:
             st.warning(t("ai_not_available"))
 
