@@ -566,7 +566,7 @@ def test_pad_skips_twin_bullet_with_same_text():
 
 
 def test_experience_suggested_by_analysis_survives_selection(monkeypatch):
-    # Kashio: el análisis sugirió DCM, la selección lo tiró y la sugerencia se perdió.
+    # Vacante fintech: el análisis sugirió DCM, la selección lo tiró y la sugerencia se perdió.
     import ai_analyzer
     monkeypatch.setattr(ai_analyzer, "_call_validated", lambda *a, **k: {"selected_ids": ["exp_a", "b_a1", "b_a2"]})
     manifest = [{"id": "exp_a", "type": "experience", "text": "Condor"},

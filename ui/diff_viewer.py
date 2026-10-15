@@ -136,7 +136,7 @@ def _collect_suggestion_changes(d: dict, suggestions: dict) -> tuple[list, list]
 def unsupported_summary_claims(summary: str, d: dict, keywords: list) -> list[str]:
     """Keywords de la vacante que el summary afirma pero ningún bullet, proyecto, skill o
     certificación del CV actual respalda. El summary se escribe contra el banco COMPLETO y la
-    selección de 1 página poda después (Kashio: prometía "idempotencia" sin DCM en la página).
+    selección de 1 página poda después (vacante fintech: prometía "idempotencia" sin DCM en la página).
     ponytail: match literal por keyword; ES/EN cruzado ("idempotencia" vs "idempotency") da
     falso positivo — es aviso, no bloqueo. Normalizar por idioma si molesta.
     """

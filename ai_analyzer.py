@@ -922,7 +922,7 @@ def select_from_bank(
     # como única evidencia de un keyword protegido nunca se descarta.
     # Experiencias para las que el análisis (banco completo) escribió sugerencias: si la
     # selección las tira, la sugerencia se descarta y el summary promete lo que el cuerpo
-    # ya no muestra (Kashio: sin DCM, "idempotencia" quedó sin un solo bullet).
+    # ya no muestra (vacante fintech: sin DCM, "idempotencia" quedó sin un solo bullet).
     known = {it["id"] for it in manifest if it.get("type") == "experience"}
     forced = [i for i in required_ids or [] if i in known and i not in selected_ids]
     if forced:
