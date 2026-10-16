@@ -25,7 +25,7 @@ BANCO_FILENAME = "banco_personal.json"
 
 
 def _banco_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), BANCO_FILENAME)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), BANCO_FILENAME)
 
 
 def generate_bank_id(prefix: str = "item") -> str:

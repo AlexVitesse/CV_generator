@@ -61,7 +61,7 @@ Las funciones de IA soportan cinco proveedores: Groq por defecto y los demás op
 | Anthropic (Claude) | `claude-opus-5-5` | [console.anthropic.com](https://console.anthropic.com) |
 | Google Gemini | `gemini-3.8-flash` | [aistudio.google.com](https://aistudio.google.com) |
 
-1. En la barra lateral, elige el proveedor e ingresa su API key. El modelo se elige de una lista sugerida por proveedor (`MODEL_OPTIONS` en `llm_client.py`) o se escribe cualquier otro id.
+1. En la barra lateral, elige el proveedor e ingresa su API key. El modelo se elige de una lista sugerida por proveedor (`MODEL_OPTIONS` en `cvgen/llm_client.py`) o se escribe cualquier otro id.
 2. Cada proveedor conserva su propia key y modelo; puedes alternar sin perderlos.
 3. La configuración se guarda localmente en `.ai_config.json` (excluido de git). Para Ollama, la variable de entorno `OLLAMA_API_KEY` tiene prioridad.
 4. El **OCR de vacante** usa Gemini Vision, así que necesitas una key de Gemini guardada para habilitarlo (independientemente del proveedor activo).

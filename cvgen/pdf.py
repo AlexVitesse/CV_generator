@@ -19,8 +19,8 @@ from reportlab.platypus import (
 )
 from reportlab.lib.colors import black
 
-from i18n import LANG
-from metrics_guard import _as_text
+from cvgen.i18n import LANG
+from cvgen.metrics_guard import _as_text
 
 
 # ═══════════════════════════════════════════════════════════════

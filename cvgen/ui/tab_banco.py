@@ -6,13 +6,13 @@ import os
 
 import streamlit as st
 
-from helpers import safe_html
-from i18n import t
+from cvgen.helpers import safe_html
+from cvgen.i18n import t
 
 
 def render_banco_tab(d: dict):
     """Renderiza el tab del Banco de Habilidades y Proyectos."""
-    from banco import (
+    from cvgen.banco import (
         load_banco, save_banco, migrate_from_config, bank_to_active_cv,
         count_bank_items, toggle_all, generate_bank_id,
     )
@@ -22,7 +22,7 @@ def render_banco_tab(d: dict):
     # ── Si no hay banco, mostrar opción de importar ──
     if not banco or not banco.get("experiences"):
         st.info(t("banco_empty"))
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config_personal.json")
+        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config_personal.json")
         if os.path.exists(cfg_path):
             if st.button(t("banco_import"), type="primary"):
                 banco = migrate_from_config(cfg_path)

@@ -6,14 +6,14 @@ import logging
 
 import streamlit as st
 
-from helpers import sync_widgets_to_data, apply_chat_patch, _resolve_patch_index
-from i18n import t
-from ai_analyzer import AI_AVAILABLE
+from cvgen.helpers import sync_widgets_to_data, apply_chat_patch, _resolve_patch_index
+from cvgen.i18n import t
+from cvgen.ai_analyzer import AI_AVAILABLE
 
 logger = logging.getLogger("ui")
 
 
-import session_keys as sk
+from cvgen import session_keys as sk
 
 
 def render_chat_tab(d: dict):
@@ -102,7 +102,7 @@ def render_chat_tab(d: dict):
         with st.chat_message("assistant"):
             with st.spinner(t("chat_thinking")):
                 try:
-                    from ai_analyzer import chat_with_advisor
+                    from cvgen.ai_analyzer import chat_with_advisor
                     sync_widgets_to_data(d)
                     reply = chat_with_advisor(
                         d,
@@ -129,7 +129,7 @@ def render_chat_tab(d: dict):
         if st.button(t("chat_apply"), key="chat_apply_btn"):
             with st.spinner(t("chat_extracting")):
                 try:
-                    from ai_analyzer import extract_chat_patch
+                    from cvgen.ai_analyzer import extract_chat_patch
                     sync_widgets_to_data(d)
                     last_msg = st.session_state[sk.CHAT_MESSAGES][-1]["content"]
                     patch = extract_chat_patch(

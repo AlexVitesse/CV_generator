@@ -26,9 +26,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai_analyzer import analyze_vacancy, load_ai_config, select_from_bank
-from banco import apply_ai_selection, bank_to_active_cv, get_bank_manifest
-from helpers import sanitize_ai_result
+from cvgen.ai_analyzer import analyze_vacancy, load_ai_config, select_from_bank
+from cvgen.banco import apply_ai_selection, bank_to_active_cv, get_bank_manifest
+from cvgen.helpers import sanitize_ai_result
 
 # Umbral de "pasa filtro ATS". analyze.md: 70-84 = cubre todos los must-haves.
 PASS_THRESHOLD = 70

@@ -1,7 +1,7 @@
 """Tests de translate.py — restauración de IDs y fallback por desajuste (V2-11)."""
 
-import translate
-from translate import _restore_ids_with_fallback
+from cvgen import translate
+from cvgen.translate import _restore_ids_with_fallback
 
 
 def test_restore_ids_matches_lengths(monkeypatch):

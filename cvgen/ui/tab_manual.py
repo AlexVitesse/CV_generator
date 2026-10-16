@@ -4,9 +4,9 @@ Tab de edición manual del CV.
 
 import streamlit as st
 
-from helpers import uid
-from i18n import t
-from validation import validate_email, validate_phone, validate_linkedin
+from cvgen.helpers import uid
+from cvgen.i18n import t
+from cvgen.validation import validate_email, validate_phone, validate_linkedin
 
 
 def render_manual_tab(d: dict):

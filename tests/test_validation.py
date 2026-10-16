@@ -2,7 +2,7 @@
 
 import pytest
 
-from validation import (
+from cvgen.validation import (
     parse_cv,
     validate_email,
     validate_linkedin,

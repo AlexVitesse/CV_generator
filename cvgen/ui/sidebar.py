@@ -11,16 +11,16 @@ import streamlit as st
 
 logger = logging.getLogger("ui")
 
-from helpers import (
+from cvgen.helpers import (
     uid, clear_keys, sync_widgets_to_data, push_data_to_widgets,
     default_cv_data,
 )
-from i18n import LANG_NAMES, t
-from translate import TRANSLATOR_AVAILABLE, translate_cv_data
-from pdf import generate_cv_pdf
-from ai_analyzer import AI_AVAILABLE
-from validation import parse_cv
-import session_keys as sk
+from cvgen.i18n import LANG_NAMES, t
+from cvgen.translate import TRANSLATOR_AVAILABLE, translate_cv_data
+from cvgen.pdf import generate_cv_pdf
+from cvgen.ai_analyzer import AI_AVAILABLE
+from cvgen.validation import parse_cv
+from cvgen import session_keys as sk
 
 
 def render_sidebar(d: dict):
@@ -144,7 +144,7 @@ def render_sidebar(d: dict):
             with sc1:
                 if st.button(t("generate_summary"), use_container_width=True):
                     try:
-                        from ai_analyzer import generate_text, SUMMARY_SYSTEM_PROMPT
+                        from cvgen.ai_analyzer import generate_text, SUMMARY_SYSTEM_PROMPT
                         sync_widgets_to_data(d)
                         lang_name = "español" if st.session_state[sk.CONTENT_LANG] == "es" else "English"
                         vacancy_ctx = st.session_state.get(sk.VACANCY_TEXT, "").strip()
@@ -172,7 +172,7 @@ def render_sidebar(d: dict):
                         st.warning(t("cover_no_vacancy"))
                     else:
                         try:
-                            from ai_analyzer import generate_text, COVER_LETTER_SYSTEM_PROMPT
+                            from cvgen.ai_analyzer import generate_text, COVER_LETTER_SYSTEM_PROMPT
                             sync_widgets_to_data(d)
                             lang_name = "español" if st.session_state[sk.CONTENT_LANG] == "es" else "English"
                             with st.spinner(t("cover_generating")):
@@ -249,8 +249,8 @@ def render_sidebar(d: dict):
         st.subheader(t("ai_config_header"))
 
         if AI_AVAILABLE:
-            from ai_analyzer import save_ai_config
-            from llm_client import PROVIDERS, PROVIDER_LABELS, DEFAULT_MODELS, DEFAULT_PROVIDER, MODEL_OPTIONS
+            from cvgen.ai_analyzer import save_ai_config
+            from cvgen.llm_client import PROVIDERS, PROVIDER_LABELS, DEFAULT_MODELS, DEFAULT_PROVIDER, MODEL_OPTIONS
 
             providers_cfg = st.session_state.setdefault(sk.AI_PROVIDERS, {})
             cur_provider = st.session_state.get(sk.AI_PROVIDER) or DEFAULT_PROVIDER
@@ -319,7 +319,7 @@ def render_sidebar(d: dict):
         if st.session_state.get(sk.BANCO):
             st.divider()
             if st.button(t("banco_save_cv"), use_container_width=True):
-                from banco import merge_cv_to_bank, save_banco
+                from cvgen.banco import merge_cv_to_bank, save_banco
                 sync_widgets_to_data(d)
                 merge_cv_to_bank(d, st.session_state[sk.BANCO])
                 save_banco(st.session_state[sk.BANCO])

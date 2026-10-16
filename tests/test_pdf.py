@@ -5,7 +5,7 @@ from io import BytesIO
 import pytest
 from pypdf import PdfReader
 
-from pdf import safe, generate_cv_pdf
+from cvgen.pdf import safe, generate_cv_pdf
 
 
 def _cv(n_exps=2, bullets_per_exp=3):
@@ -87,7 +87,7 @@ def test_fits_flag_matches_page_count():
 
 # ── Revisión de un CV real (14-oct-2026) ──
 
-from pdf import detect_content_lang
+from cvgen.pdf import detect_content_lang
 
 
 def test_detect_content_lang():
@@ -116,7 +116,7 @@ def test_pdf_headers_follow_content_and_metadata():
 
 
 def test_localize_meta_dates_and_location():
-    from pdf import localize_meta
+    from cvgen.pdf import localize_meta
     assert localize_meta("Abril 2026 – Junio 2026", "en") == "April 2026 – June 2026"
     assert localize_meta("Remoto — EE.UU.", "en") == "Remote — USA"
     assert localize_meta("May 2024 – Present", "es") == "Mayo 2024 – Actualidad"

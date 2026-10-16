@@ -6,8 +6,8 @@ y extrae bien la respuesta, sin tocar la red.
 
 import pytest
 
-import llm_client
-from llm_client import call_llm, LLMError, _split_system
+from cvgen import llm_client
+from cvgen.llm_client import call_llm, LLMError, _split_system
 
 
 class _Resp:
@@ -173,7 +173,7 @@ def test_groq_is_default_and_openai_compatible(capture):
 
 
 def test_legacy_config_stays_on_ollama(tmp_path, monkeypatch):
-    import ai_analyzer
+    from cvgen import ai_analyzer
     cfg = tmp_path / "cfg.json"
     cfg.write_text('{"api_key": "old", "model": "gpt-oss:120b-cloud"}', encoding="utf-8")
     monkeypatch.setattr(ai_analyzer, "_config_path", lambda: str(cfg))

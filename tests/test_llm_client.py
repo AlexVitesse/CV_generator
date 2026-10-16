@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-import llm_client
-from llm_client import _parse_json_response, call_ollama, LLMError
+from cvgen import llm_client
+from cvgen.llm_client import _parse_json_response, call_ollama, LLMError
 
 
 # ── _parse_json_response ─────────────────────────────────────────

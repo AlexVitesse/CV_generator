@@ -10,7 +10,7 @@ import copy
 
 import pytest
 
-from banco import (
+from cvgen.banco import (
     bank_to_active_cv,
     merge_cv_to_bank,
     toggle_item,
@@ -217,7 +217,7 @@ def test_count_bank_items():
 # ── Certificaciones: ahora compiten por el espacio de la página ──
 
 def test_certifications_are_in_the_manifest():
-    from banco import get_bank_manifest
+    from cvgen.banco import get_bank_manifest
     ids = {it["id"] for it in get_bank_manifest(_bank()) if it["type"] == "certification"}
     assert ids == {"cert_1", "cert_2"}
 
@@ -252,7 +252,7 @@ def test_bank_to_active_cv_filters_inactive():
 
 
 def test_experiences_reverse_chronological():
-    from banco import bank_to_active_cv
+    from cvgen.banco import bank_to_active_cv
     banco = {"experiences": [
         {"id": "dcm", "dates": "Abril 2026 – Junio 2026", "bullets": []},
         {"id": "old", "dates": "Jan 2020 - Dec 2021", "bullets": []},

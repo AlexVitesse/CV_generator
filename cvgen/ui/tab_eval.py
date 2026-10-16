@@ -6,8 +6,8 @@ import logging
 
 import streamlit as st
 
-from helpers import sync_widgets_to_data, safe_html, get_score_color
-from i18n import t
+from cvgen.helpers import sync_widgets_to_data, safe_html, get_score_color
+from cvgen.i18n import t
 
 logger = logging.getLogger("ui")
 
@@ -27,7 +27,7 @@ def render_eval_tab(d: dict):
 
     if st.button(t("eval_generate"), type="primary"):
         try:
-            from ai_analyzer import evaluate_cv_detailed
+            from cvgen.ai_analyzer import evaluate_cv_detailed
             sync_widgets_to_data(d)
             with st.spinner(t("eval_generating")):
                 eval_result = evaluate_cv_detailed(

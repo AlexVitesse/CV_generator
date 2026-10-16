@@ -1,8 +1,8 @@
 """Tests de los guards anti-fabricación: métricas (#1), tier de skills (#2),
 reconciliación de viabilidad (#3). Cubren los casos reales vistos en logs/."""
 
-from metrics_guard import extract_metrics, find_fabricated_metrics, resolve_target_index
-from helpers import (
+from cvgen.metrics_guard import extract_metrics, find_fabricated_metrics, resolve_target_index
+from cvgen.helpers import (
     sanitize_ai_result,
     _enforce_skill_tiers,
     _demote_missing_keyword_skills,
@@ -13,8 +13,8 @@ from helpers import (
     detect_vacancy_language,
     apply_chat_patch,
 )
-from ai_analyzer import _reintegrate_lost_evidence, _drop_projects_duplicating_experience
-from translate import _restore_ids_with_fallback
+from cvgen.ai_analyzer import _reintegrate_lost_evidence, _drop_projects_duplicating_experience
+from cvgen.translate import _restore_ids_with_fallback
 
 
 # ── #1 — extract_metrics ─────────────────────────────────────────
@@ -326,7 +326,7 @@ def test_project_duplicating_selected_experience_is_dropped():
 
 # ── Clamp de la re-eval tras adaptar (anti-caída artificial del score) ──
 
-from helpers import clamp_reeval_score
+from cvgen.helpers import clamp_reeval_score
 
 
 def test_clamp_floors_score_when_matches_preserved():
@@ -398,7 +398,7 @@ def test_english_vacancy_still_detected():
 # ── merge_skill_line: reusa el id (no ensucia el banco en cada guardado) ──
 
 def test_merge_skill_line_reuses_id_and_keeps_languages():
-    from ui.diff_viewer import merge_skill_line
+    from cvgen.ui.diff_viewer import merge_skill_line
     old = [{"id": "sk_tech", "text": "Core skills: Python"},
            {"id": "sk_lang", "text": "Languages: Spanish, English"}]
     out = merge_skill_line(old, "Core skills: Python, Go")
@@ -408,7 +408,7 @@ def test_merge_skill_line_reuses_id_and_keeps_languages():
 
 # ── Revisión 14-oct-2026 ──
 
-from ai_analyzer import _covers
+from cvgen.ai_analyzer import _covers
 
 
 def test_covers_symbol_keywords():
@@ -419,7 +419,7 @@ def test_covers_symbol_keywords():
 
 
 def test_reintegrated_project_survives_dedup(monkeypatch):
-    import ai_analyzer
+    from cvgen import ai_analyzer
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
                 {"id": "proj_z", "type": "project", "text": "ZAPI — SaaS: multi-tenant", "tags": ["kafka"]}]
     monkeypatch.setattr(ai_analyzer, "_call_validated",
@@ -429,7 +429,7 @@ def test_reintegrated_project_survives_dedup(monkeypatch):
 
 
 def test_translation_mangled_id_does_not_duplicate(monkeypatch):
-    import translate
+    from cvgen import translate
     monkeypatch.setattr(translate, "_translate_fallback", lambda t, s, g: t + "[fb]")
     data = [{"id": "exp_a", "title": "Ingeniero"}, {"id": "exp_b", "title": "Dev"}]
     trans = [{"id": "exp-a", "title": "Engineer"}, {"id": "exp_b", "title": "Dev"}]
@@ -439,7 +439,7 @@ def test_translation_mangled_id_does_not_duplicate(monkeypatch):
 
 
 def test_list_bullets_are_joined():
-    from ai_analyzer import _normalize_suggestion_text
+    from cvgen.ai_analyzer import _normalize_suggestion_text
     parsed = {"suggestions": {"experiences": [{"id": "e", "bullets": ["Hizo A", {"text": "Hizo B"}]}],
                               "projects": [{"id": "p", "description": ["Desc"]}]}}
     _normalize_suggestion_text(parsed)
@@ -450,7 +450,7 @@ def test_list_bullets_are_joined():
 def test_reintegrated_experience_still_dedups_project(monkeypatch):
     # Caso real: la reintegración re-agrega la EXPERIENCIA ZAPI; el proyecto ZAPI que
     # eligió el modelo debe caer (antes salían los dos).
-    import ai_analyzer
+    from cvgen import ai_analyzer
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI (Own Project) — AI Engineer (2026)"},
                 {"id": "bul_z", "type": "bullet", "parent": "exp_z", "text": "Deployed pgvector services"},
                 {"id": "proj_z", "type": "project", "text": "ZAPI — SaaS: multi-tenant"}]
@@ -461,7 +461,7 @@ def test_reintegrated_experience_still_dedups_project(monkeypatch):
 
 
 def test_parse_json_tolerates_raw_newline_in_string():
-    from llm_client import _parse_json_response
+    from cvgen.llm_client import _parse_json_response
     assert _parse_json_response('{"a": "linea1\nlinea2"}') == {"a": "linea1\nlinea2"}
 
 
@@ -474,7 +474,7 @@ def test_real_job_title_is_restored():
 
 
 def test_merge_skill_line_one_entry_per_tier():
-    from ui.diff_viewer import merge_skill_line
+    from cvgen.ui.diff_viewer import merge_skill_line
     old = [{"id": "sk1", "text": "Core skills: Python"}, {"id": "sk2", "text": "Exposure to: Go"},
            {"id": "sk_lang", "text": "Languages: Spanish"}]
     out = merge_skill_line(old, "Core skills: Python\nWorking knowledge: SQL\nExposure to: Go")
@@ -498,7 +498,7 @@ def test_dropped_core_skills_are_restored():
 
 
 def test_has_foreign_text_detects_mixed_bank():
-    from helpers import has_foreign_text
+    from cvgen.helpers import has_foreign_text
     en = {"summary": "Engineer with experience in Python",
           "experiences": [{"bullets": "Built APIs with FastAPI\nTrained five engineers in SQL"}]}
     assert not has_foreign_text(en, "en")
@@ -517,7 +517,7 @@ def test_demoted_skill_returns_to_original_tier():
 def test_title_not_applied_to_other_company():
     # Caso real: sugerencia con id de ZAPI (no seleccionada) resuelta por contenido
     # hacia Condor → no debe ponerle a Condor el título de ZAPI.
-    from ui.diff_viewer import _collect_suggestion_changes
+    from cvgen.ui.diff_viewer import _collect_suggestion_changes
     d = {"experiences": [{"id": "exp_condor", "title": "Python Backend Engineer",
                           "bullets": "Developed RAG pipelines using LangChain"}]}
     sugg = {"experiences": [{"id": "exp_zapi", "title": "AI Engineer – Founder",
@@ -542,7 +542,7 @@ def test_evidenced_untiered_skill_goes_to_working_not_exposure():
 
 
 def test_thin_reintegrated_experience_gets_second_bullet():
-    from ai_analyzer import _pad_thin_experiences
+    from cvgen.ai_analyzer import _pad_thin_experiences
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI — Founder"},
                 {"id": "b_hook", "type": "bullet", "parent": "exp_z", "text": "MercadoPago webhooks"},
                 {"id": "b_agent", "type": "bullet", "parent": "exp_z", "text": "AI agents on LangChain with Gemini Vision"},
@@ -556,7 +556,7 @@ def test_thin_reintegrated_experience_gets_second_bullet():
 def test_pad_skips_twin_bullet_with_same_text():
     # Caso real: el banco tenía bul_ai_dev_tools con el MISMO texto que bul_de51254e y ZAPI salió
     # con la línea de Docker repetida.
-    from ai_analyzer import _pad_thin_experiences
+    from cvgen.ai_analyzer import _pad_thin_experiences
     manifest = [{"id": "exp_z", "type": "experience", "text": "ZAPI"},
                 {"id": "b_dock", "type": "bullet", "parent": "exp_z", "text": "Deployed Docker with pgvector"},
                 {"id": "b_twin", "type": "bullet", "parent": "exp_z", "text": "Deployed Docker with pgvector "},
@@ -567,7 +567,7 @@ def test_pad_skips_twin_bullet_with_same_text():
 
 def test_experience_suggested_by_analysis_survives_selection(monkeypatch):
     # Vacante fintech: el análisis sugirió DCM, la selección lo tiró y la sugerencia se perdió.
-    import ai_analyzer
+    from cvgen import ai_analyzer
     monkeypatch.setattr(ai_analyzer, "_call_validated", lambda *a, **k: {"selected_ids": ["exp_a", "b_a1", "b_a2"]})
     manifest = [{"id": "exp_a", "type": "experience", "text": "Condor"},
                 {"id": "b_a1", "type": "bullet", "parent": "exp_a", "text": "FastAPI"},
@@ -584,7 +584,7 @@ def test_experience_suggested_by_analysis_survives_selection(monkeypatch):
 
 
 def test_summary_claim_without_body_evidence_is_flagged():
-    from ui.diff_viewer import unsupported_summary_claims
+    from cvgen.ui.diff_viewer import unsupported_summary_claims
     d = {"experiences": [{"title": "Backend", "bullets": "Built FastAPI APIs with webhooks"}],
          "projects": [], "skills": [{"text": "Core: Python, Docker"}], "certifications": []}
     s = "Backend engineer with Python, webhooks and idempotency; multi-agent architectures."

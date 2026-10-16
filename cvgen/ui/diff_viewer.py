@@ -8,11 +8,11 @@ import re
 
 import streamlit as st
 
-from helpers import uid, sync_widgets_to_data
-import session_keys as sk
-from i18n import t
-from llm_client import get_logger
-from metrics_guard import resolve_target_index
+from cvgen.helpers import uid, sync_widgets_to_data
+from cvgen import session_keys as sk
+from cvgen.i18n import t
+from cvgen.llm_client import get_logger
+from cvgen.metrics_guard import resolve_target_index
 
 logger = get_logger("diff_viewer")
 
@@ -140,7 +140,7 @@ def unsupported_summary_claims(summary: str, d: dict, keywords: list) -> list[st
     ponytail: match literal por keyword; ES/EN cruzado ("idempotencia" vs "idempotency") da
     falso positivo — es aviso, no bloqueo. Normalizar por idioma si molesta.
     """
-    from ai_analyzer import _covers
+    from cvgen.ai_analyzer import _covers
     body = " ".join(
         [str(e.get("bullets", "")) + " " + str(e.get("title", "")) for e in d.get("experiences", [])]
         + [str(p.get("name", "")) + " " + str(p.get("description", "")) for p in d.get("projects", [])]

@@ -41,3 +41,5 @@ cv_*.html
 .continue/
 .agents/
 skills-lock.json
+
+_archivo/

@@ -7,8 +7,8 @@ import logging
 
 import streamlit as st
 
-from helpers import safe_html, get_score_color
-from i18n import t
+from cvgen.helpers import safe_html, get_score_color
+from cvgen.i18n import t
 
 logger = logging.getLogger("ui")
 
@@ -52,8 +52,8 @@ def render_score_navbar(d: dict):
         if vacancy_text and st.session_state.get("ai_api_key"):
             if st.button(t("navbar_reevaluate"), use_container_width=True, type="primary"):
                 try:
-                    from ai_analyzer import analyze_vacancy
-                    from helpers import sync_widgets_to_data, sanitize_ai_result
+                    from cvgen.ai_analyzer import analyze_vacancy
+                    from cvgen.helpers import sync_widgets_to_data, sanitize_ai_result
                     sync_widgets_to_data(d)
                     extra_context = ""
                     refine_msgs = st.session_state.get("refine_messages", [])

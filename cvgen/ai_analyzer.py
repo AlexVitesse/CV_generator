@@ -12,7 +12,7 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
-from llm_client import (
+from cvgen.llm_client import (
     CV_DEBUG as _CV_DEBUG,
     HTTPX_AVAILABLE as AI_AVAILABLE,
     LLMError,
@@ -24,18 +24,18 @@ from llm_client import (
     call_llm,
     get_logger,
 )
-from validation import (
+from cvgen.validation import (
     VacancyAnalysisResponse,
     DetailedEvalResponse,
     BankSelectionResponse,
 )
-from metrics_guard import find_fabricated_metrics
+from cvgen.metrics_guard import find_fabricated_metrics
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
 # ═══════════════════════════════════════════════════════════════
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 logger = get_logger("ai_analyzer")
 
 # Dumps de depuración: se conservan los N más recientes (ai.log ya rota solo; estos
@@ -68,7 +68,7 @@ _CONFIG_FILE = ".ai_config.json"
 
 
 def _config_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), _CONFIG_FILE)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _CONFIG_FILE)
 
 
 def _default_providers_cfg() -> dict:

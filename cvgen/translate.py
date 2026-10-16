@@ -5,9 +5,9 @@ Traducción automática de contenido del CV usando Google Translate (gratis).
 import copy
 import json
 
-from llm_client import call_llm, _parse_json_response, get_logger
+from cvgen.llm_client import call_llm, _parse_json_response, get_logger
 from pydantic import ValidationError
-from validation import TranslationResponse
+from cvgen.validation import TranslationResponse
 
 try:
     from deep_translator import GoogleTranslator

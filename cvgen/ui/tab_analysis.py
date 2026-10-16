@@ -8,15 +8,15 @@ import logging
 import httpx
 import streamlit as st
 
-from helpers import sync_widgets_to_data, push_data_to_widgets, sanitize_ai_result
-from i18n import t
-from ai_analyzer import AI_AVAILABLE
-from llm_client import LLMError
+from cvgen.helpers import sync_widgets_to_data, push_data_to_widgets, sanitize_ai_result
+from cvgen.i18n import t
+from cvgen.ai_analyzer import AI_AVAILABLE
+from cvgen.llm_client import LLMError
 
 logger = logging.getLogger("ui")
 
 
-import session_keys as sk
+from cvgen import session_keys as sk
 
 
 def render_analysis_tab(d: dict):
@@ -45,7 +45,7 @@ def render_analysis_tab(d: dict):
         st.caption(t("vacancy_ocr_no_key"))
     if st.button(t("vacancy_ocr_button"), disabled=not (gemini_key and uploaded_image)):
         try:
-            from ai_analyzer import extract_vacancy_text_from_image
+            from cvgen.ai_analyzer import extract_vacancy_text_from_image
             with st.spinner(t("vacancy_ocr_running")):
                 extracted = extract_vacancy_text_from_image(
                     uploaded_image.getvalue(),
@@ -73,7 +73,7 @@ def render_analysis_tab(d: dict):
             st.warning(t("vacancy_empty"))
         else:
             try:
-                from ai_analyzer import analyze_vacancy
+                from cvgen.ai_analyzer import analyze_vacancy
                 sync_widgets_to_data(d)
 
                 # Fase 1: Analizar con TODO el banco/CV completo
@@ -81,8 +81,8 @@ def render_analysis_tab(d: dict):
                 d_full = d
                 if banco and banco.get("experiences"):
                     import copy
-                    from banco import bank_to_active_cv as _b2cv
-                    from banco import toggle_all as _toggle_all, save_banco
+                    from cvgen.banco import bank_to_active_cv as _b2cv
+                    from cvgen.banco import toggle_all as _toggle_all, save_banco
                     # Sobre una COPIA: si analyze_vacancy falla, la selección curada del
                     # banco de sesión no debe quedar en todo-activo y persistirse luego.
                     banco_full = copy.deepcopy(banco)
@@ -100,8 +100,8 @@ def render_analysis_tab(d: dict):
 
                 # Fase 2: Seleccionar items óptimos del banco para CV de 1 página
                 if banco and banco.get("experiences"):
-                    from ai_analyzer import select_from_bank
-                    from banco import get_bank_manifest, apply_ai_selection, bank_to_active_cv
+                    from cvgen.ai_analyzer import select_from_bank
+                    from cvgen.banco import get_bank_manifest, apply_ai_selection, bank_to_active_cv
                     with st.spinner(t("banco_selecting")):
                         manifest = get_bank_manifest(banco)
                         selected_ids = select_from_bank(
@@ -150,7 +150,7 @@ def render_analysis_tab(d: dict):
             st.write(result.get("reasoning", ""))
 
         # ── Diff Viewer de sugerencias (MEJ-05) ──────────
-        from ui.diff_viewer import render_suggestions_diff
+        from cvgen.ui.diff_viewer import render_suggestions_diff
         render_suggestions_diff(d, result)
 
         # ── Chat de refinamiento inline ──────────────────
@@ -202,7 +202,7 @@ def render_refine_chat(d: dict, result: dict):
         with st.chat_message("assistant"):
             with st.spinner(t("chat_thinking")):
                 try:
-                    from ai_analyzer import (
+                    from cvgen.ai_analyzer import (
                         chat_with_advisor,
                         REFINE_CHAT_SYSTEM_PROMPT,
                     )
@@ -239,7 +239,7 @@ def render_refine_chat(d: dict, result: dict):
     if refine_messages and refine_messages[-1]["role"] == "assistant":
         if st.button("🔄 " + t("refine_reanalyze"), key="refine_reanalyze"):
             try:
-                from ai_analyzer import analyze_vacancy
+                from cvgen.ai_analyzer import analyze_vacancy
                 sync_widgets_to_data(d)
                 extra = "\n".join(
                     m["content"]

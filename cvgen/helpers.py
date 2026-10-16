@@ -12,8 +12,8 @@ import uuid
 
 import streamlit as st
 
-from i18n import LANG_NAMES, t
-from translate import TRANSLATOR_AVAILABLE, translate_cv_data
+from cvgen.i18n import LANG_NAMES, t
+from cvgen.translate import TRANSLATOR_AVAILABLE, translate_cv_data
 
 # ═══════════════════════════════════════════════════════════════
 # SAFE HTML HELPER (XSS prevention)
@@ -628,7 +628,7 @@ def default_cv_data():
     return data
 
 
-import session_keys as sk
+from cvgen import session_keys as sk
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -661,7 +661,7 @@ def has_foreign_text(d: dict, lang: str) -> bool:
     """¿Algún summary/bullet/descripción está en otro idioma que `lang`? El banco mezcla
     idiomas y los bullets se usan TAL CUAL (sin reescritura), así que el idioma de la
     sesión no basta para decidir si hay que traducir."""
-    from pdf import text_lang
+    from cvgen.pdf import text_lang
     texts = str(d.get("summary", "")).split("\n")
     for e in d.get("experiences", []):
         texts += str(e.get("bullets", "")).split("\n")
@@ -703,7 +703,7 @@ def deferred_translate_and_reevaluate(d: dict):
 
     # Re-evaluar con el CV actualizado (preservar extra_context del chat de refinamiento)
     try:
-        from ai_analyzer import analyze_vacancy
+        from cvgen.ai_analyzer import analyze_vacancy
         # Score pre-adapt (análisis contra banco completo): actúa de piso si la
         # re-eval conservó los keywords matcheados (clamp anti-caída artificial).
         prev_result = st.session_state.get(sk.ANALYSIS_RESULT)

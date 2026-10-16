@@ -10,11 +10,10 @@
 ║   Uso:                                                       ║
 ║     streamlit run app.py                                     ║
 ║                                                              ║
-║   Estructura (MEJ-06):                                       ║
+║   Estructura:                                                ║
 ║     app.py          → orquestación (init + routing de tabs)  ║
-║     ui_components.py → render de sidebar, navbar y tabs       ║
-║     helpers.py       → utilidades y flujos de datos          ║
-║     validation.py    → validación Pydantic + formato         ║
+║     cvgen/ui/       → render de sidebar, navbar y tabs       ║
+║     cvgen/          → lógica, IA, PDF, banco y validación    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -22,10 +21,10 @@ import os
 
 import streamlit as st
 
-from i18n import t
-from helpers import default_cv_data, deferred_translate_and_reevaluate, push_data_to_widgets
-from ai_analyzer import AI_AVAILABLE
-from ui_components import (
+from cvgen.i18n import t
+from cvgen.helpers import default_cv_data, deferred_translate_and_reevaluate, push_data_to_widgets
+from cvgen.ai_analyzer import AI_AVAILABLE
+from cvgen.ui import (
     render_score_navbar,
     render_sidebar,
     render_analysis_tab,
@@ -34,7 +33,7 @@ from ui_components import (
     render_eval_tab,
     render_banco_tab,
 )
-import session_keys as sk
+from cvgen import session_keys as sk
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -44,7 +43,7 @@ import session_keys as sk
 def _init_session_state():
     # ── Banco de habilidades ──
     if sk.BANCO not in st.session_state:
-        from banco import get_load_warning, load_banco, migrate_from_config, save_banco
+        from cvgen.banco import get_load_warning, load_banco, migrate_from_config, save_banco
         _banco = load_banco()
         _load_warn = get_load_warning()
         if _load_warn:
@@ -59,7 +58,7 @@ def _init_session_state():
 
     if sk.CV not in st.session_state:
         if st.session_state.get(sk.BANCO):
-            from banco import bank_to_active_cv
+            from cvgen.banco import bank_to_active_cv
             st.session_state[sk.CV] = bank_to_active_cv(st.session_state[sk.BANCO])
         else:
             st.session_state[sk.CV] = default_cv_data()
@@ -69,8 +68,8 @@ def _init_session_state():
         st.session_state[sk.CONTENT_LANG] = "es"
     if sk.AI_API_KEY not in st.session_state:
         if AI_AVAILABLE:
-            from ai_analyzer import load_ai_config
-            from llm_client import DEFAULT_MODELS
+            from cvgen.ai_analyzer import load_ai_config
+            from cvgen.llm_client import DEFAULT_MODELS
             _cfg = load_ai_config()
             _provider = _cfg["provider"]
             _api_key = _cfg.get("api_key", "")
