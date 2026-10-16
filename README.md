@@ -63,7 +63,7 @@ Las funciones de IA soportan cinco proveedores: Groq por defecto y los demás op
 
 1. En la barra lateral, elige el proveedor e ingresa su API key. El modelo se elige de una lista sugerida por proveedor (`MODEL_OPTIONS` en `cvgen/llm_client.py`) o se escribe cualquier otro id.
 2. Cada proveedor conserva su propia key y modelo; puedes alternar sin perderlos.
-3. La configuración se guarda localmente en `.ai_config.json` (excluido de git). Para Ollama, la variable de entorno `OLLAMA_API_KEY` tiene prioridad.
+3. La configuración se guarda localmente en `data/.ai_config.json` (excluido de git). Para Ollama, la variable de entorno `OLLAMA_API_KEY` tiene prioridad.
 4. El **OCR de vacante** usa Gemini Vision, así que necesitas una key de Gemini guardada para habilitarlo (independientemente del proveedor activo).
 
 ## 🛠️ Configuración Personalizada
@@ -71,9 +71,9 @@ Las funciones de IA soportan cinco proveedores: Groq por defecto y los demás op
 Para mantener tus datos personales seguros y no subirlos accidentalmente a GitHub:
 
 1. El proyecto incluye un archivo `config_plantilla.json`.
-2. Haz una copia de ese archivo y nómbrala `config_personal.json`.
-3. Edita `config_personal.json` con tu información real.
-4. El archivo `.gitignore` ya está configurado para ignorar `config_personal.json`, por lo que tus datos estarán a salvo localmente.
+2. Haz una copia de ese archivo y guárdala como `data/config_personal.json`.
+3. Edita `data/config_personal.json` con tu información real.
+4. El archivo `.gitignore` ya está configurado para ignorar la carpeta `data/`, por lo que tus datos estarán a salvo localmente.
 
 ## 💻 Uso
 Ejecuta la aplicación con:

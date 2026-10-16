@@ -9,6 +9,7 @@ venv/
 config_personal.json
 banco_personal.json
 .ai_config.json
+data/
 
 # Herramientas y editores
 .claude/

@@ -34,7 +34,7 @@ _archivo/            ← archivos sueltos (ignorado por git)
 | Rutas de datos | `dirname(__file__)` = raíz | `dirname(dirname(__file__))` = raíz, en `ai_analyzer.py` (`logs/`, `.ai_config.json`), `llm_client.py` (`logs/`), `banco.py` (`banco_personal.json`), `ui/tab_banco.py` (`config_personal.json`, un `..` más) |
 | Prompts | `prompts/` en raíz | `cvgen/prompts/`, junto a `ai_analyzer.py` — `_load_prompt` no cambió |
 
-Los datos personales **no se movieron**: siguen en la raíz y en `.gitignore`.
+Los datos personales **no se movieron** en este refactor (después pasaron a `data/`, ver [REFACTOR_CARPETA_DATA.md](REFACTOR_CARPETA_DATA.md)).
 
 ## Limpieza fuera de git
 

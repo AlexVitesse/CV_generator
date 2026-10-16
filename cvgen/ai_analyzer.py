@@ -12,6 +12,8 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
+from cvgen import DATA_DIR
+
 from cvgen.llm_client import (
     CV_DEBUG as _CV_DEBUG,
     HTTPX_AVAILABLE as AI_AVAILABLE,
@@ -68,7 +70,7 @@ _CONFIG_FILE = ".ai_config.json"
 
 
 def _config_path() -> str:
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _CONFIG_FILE)
+    return os.path.join(DATA_DIR, _CONFIG_FILE)
 
 
 def _default_providers_cfg() -> dict:

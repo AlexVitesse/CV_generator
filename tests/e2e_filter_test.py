@@ -169,7 +169,7 @@ def main():
         print("ERROR: falta API key (.ai_config.json o OLLAMA_API_KEY)")
         sys.exit(2)
 
-    banco = json.load(open("banco_personal.json", encoding="utf-8"))
+    banco = json.load(open("data/banco_personal.json", encoding="utf-8"))
     vacs = VACANCIES[:1] if quick else VACANCIES
 
     print(f"Modelo: {model} | umbral pasa-filtro: {PASS_THRESHOLD} | vacantes: {len(vacs)}")

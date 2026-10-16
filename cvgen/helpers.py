@@ -12,6 +12,7 @@ import uuid
 
 import streamlit as st
 
+from cvgen import DATA_DIR, ROOT_DIR
 from cvgen.i18n import LANG_NAMES, t
 from cvgen.translate import TRANSLATOR_AVAILABLE, translate_cv_data
 
@@ -581,8 +582,8 @@ _sanitize_ai_result = sanitize_ai_result
 
 def default_cv_data():
     """Carga datos iniciales desde JSON. Prioriza config_personal.json si existe."""
-    personal_config = "config_personal.json"
-    template_config = "config_plantilla.json"
+    personal_config = os.path.join(DATA_DIR, "config_personal.json")
+    template_config = os.path.join(ROOT_DIR, "config_plantilla.json")
 
     data = {}
     if os.path.exists(personal_config):

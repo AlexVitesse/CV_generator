@@ -6,6 +6,7 @@ import os
 
 import streamlit as st
 
+from cvgen import DATA_DIR
 from cvgen.helpers import safe_html
 from cvgen.i18n import t
 
@@ -22,7 +23,7 @@ def render_banco_tab(d: dict):
     # ── Si no hay banco, mostrar opción de importar ──
     if not banco or not banco.get("experiences"):
         st.info(t("banco_empty"))
-        cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config_personal.json")
+        cfg_path = os.path.join(DATA_DIR, "config_personal.json")
         if os.path.exists(cfg_path):
             if st.button(t("banco_import"), type="primary"):
                 banco = migrate_from_config(cfg_path)

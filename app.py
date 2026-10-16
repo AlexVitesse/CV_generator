@@ -21,6 +21,7 @@ import os
 
 import streamlit as st
 
+from cvgen import DATA_DIR
 from cvgen.i18n import t
 from cvgen.helpers import default_cv_data, deferred_translate_and_reevaluate, push_data_to_widgets
 from cvgen.ai_analyzer import AI_AVAILABLE
@@ -50,7 +51,7 @@ def _init_session_state():
             st.warning(_load_warn)
         if not _banco:
             # Intentar migrar desde config_personal.json
-            cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_personal.json")
+            cfg_path = os.path.join(DATA_DIR, "config_personal.json")
             if os.path.exists(cfg_path):
                 _banco = migrate_from_config(cfg_path)
                 save_banco(_banco)
